@@ -1,0 +1,23 @@
+# Android
+*.iml
+.gradle/
+local.properties
+.idea/
+idea/
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+
+# Local env / secrets — не коммитить
+.env
+*.jks
+*.keystore
+google-services.json
+ApiKeys.kt
+
+# OS
+.DS_Store
+Thumbs.db
