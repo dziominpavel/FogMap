@@ -1,0 +1,4 @@
+# Ключ Яндекс MapKit (Full 4.42.0). НЕ коммитить реальные ключи.
+# Скопируйте local.properties.example -> local.properties и вставьте свой ключ.
+MAPKIT_API_KEY=YOUR_API_KEY
+sdk.dir=C\:\\Users\\Dziom\\AppData\\Local\\Android\\Sdk

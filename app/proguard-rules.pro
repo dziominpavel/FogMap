@@ -1,0 +1,2 @@
+-keep class com.yandex.mapkit.** { *; }
+-dontwarn com.yandex.mapkit.**

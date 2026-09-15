@@ -2,6 +2,34 @@
 
 Формат: дата — решение — причина. Новое решение добавляется сверху.
 
+## 2026-09-15 — Ребут: быстрый старт в ресивере + expedited-BootWorker
+
+Решение: BootReceiver делает синхронный best-effort старт сервиса в окне
+temp-allowlist BOOT_COMPLETED (~20 с) + ставит expedited-BootWorker
+(setForeground первым делом); SystemForegroundService WorkManager объявлен
+в манифесте с foregroundServiceType="location". Тихий рестарт после ребута
+на API 34+ негарантирован (старт location-FGS из фона запрещен вне окна) —
+страховка: MapScreen авто-стартует трекинг при открытии приложения.
+Причина: три цикла проверки на эмуляторе API 36 (прямой старт из фона —
+запрет; воркер без setForeground первым — STOP canceled; воркер без типа
+в манифесте — краш SystemForegroundService).
+
+## 2026-09-15 — Без ключа MapKit — заглушка, трекинг независим от карты
+
+Решение: FogMapApp.isMapKitReady (ключ задан + initialize ok); без ключа
+MapView не создается нигде (MapView без ключа роняет процесс AssertionError),
+экраны показывают заглушку; авто-старт трекинга вынесен из-за ворот готовности
+карты (трекинг локален, обязан работать без ключа).
+Причина: два падения процесса, найденные проверкой на эмуляторе API 36.
+
+## 2026-09-15 — Жесткие гейты старта FGS-трекинга
+
+Решение: TrackingService.start/canTrack (FINE или COARSE), проверки в onCreate
+и onStartCommand (без разрешений — stopSelf + START_NOT_STICKY), try/catch
+вокруг startForeground; BootReceiver ловит все исключения.
+Причина: старт FGS type=location без разрешений роняет процесс
+SecurityException (найдено проверкой на эмуляторе API 36).
+
 ## 2026-09-14 — ЧП-1: импорт после MVP (изменение)
 
 Решение: импорт Timeline/GPX вынести из MVP на этап после MVP.

@@ -126,3 +126,41 @@ targetSdk 36, легальность тумана (логотип не пере�
 `validate` — valid): proposal.md, 6 спек (fog-grid, map-render, tracking,
 statistics, history, app-shell), design.md (модуль, БД, рендер, сервис),
 tasks.md (6 групп, 15 задач). Реализация не начиналась — ждем apply.
+
+---
+
+## 2026-09-15 — Реализация mvp-foundation (apply, 16/17 задач)
+
+Сделали: Android-приложение с нуля (один app-модуль, Kotlin + Compose,
+minSdk 26 / target+compile 36, portrait, RU): FogGrid WebMercator 100 м +
+радиусы 100/200/500, Room (visited_cells/tracks/track_points/counters,
+миграция 1→2), транзакция «батч → ячейки → счетчики», TrackingService
+(type=location, Fused 8с/15м) + фильтры + пауза + BootReceiver/BootWorker,
+слой тумана полигонами (viewport + склейка + LRU + агрегация), экраны
+карта/статистика/история/настройки/онбординг, MapKit Full 4.42.0
+(ключ через local.properties/BuildConfig).
+
+Проверено: unit 15/15 зеленые; debug-APK собирается и ставится;
+инструментальный DatabaseTest 2/2 на эмуляторе API 36; на живом эмуляторе:
+старт без падений, сервис в foreground type=location с уведомлением,
+5 точек geo-fix → 5 точек в БД → 97 ячеек → счетчики (треки/площадь/
+дистанция/время, all/day/week); release-APK собирается с R8.
+По ходу найдены и исправлены 4 бага (все — проверкой на эмуляторе):
+старт FGS без разрешений ронял процесс; MapView без ключа ронял процесс;
+авто-старт трекинга был за воротами готовности карты; WorkManager
+SystemForegroundService без location-типа в манифесте.
+
+Решили (см. `decisions.md`): BootReceiver = синхронный быстрый старт +
+expedited-BootWorker; без ключа — заглушка вместо карты, трекинг работает;
+жесткие гейты canTrack + try/catch вокруг startForeground.
+
+Открытые вопросы (нужны владелец/секреты/железо):
+- MAPKIT_API_KEY в local.properties → визуальная проверка карты, туман поверх,
+  лаги пан/зум, логотип/копирайты (задачи 1.2, 4.1, 4.2, часть 6.1).
+- Тихий авторестарт после ребута упирается в запрет старта location-FGS из фона
+  на API 34+ (окно ~20 с после BOOT_COMPLETED); на живых устройствах проверить
+  чек-лист 3.3 (пауза/ребут/уведомление), дойти открытием приложения.
+- Задача 6.2: подпись release-APK своим ключом + проверка на двух живых
+  устройствах (сейчас release подписан debug-ключом).
+- Без Play Services заглушка реализована, но проверена только кодом (нет
+  AOSP-образа без GMS в SDK).
