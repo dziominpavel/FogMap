@@ -1,9 +1,13 @@
 @echo off
 rem Build APK and copy it to dist\ so you don't dig in app\build\outputs\...
-rem Usage: build-apk.bat [release / debug] [install]
-rem   no args  - release build
-rem   debug    - debug build (.dev applicationIdSuffix)
-rem   install  - second arg, installs the resulting APK via adb
+rem Usage: build-apk.bat [install]
+rem   no args  - builds release for real phones (arm64-v8a + armeabi-v7a)
+rem   install  - also installs the APK via adb
+rem Result: dist\FogMap-release-latest.apk (history copies in dist\archive\).
+rem No debug/emulator options here: the owner has no emulator.
+rem If a debug/emulator build is ever needed, run gradlew directly.
+rem ABI filtering is packaging-only: nothing is cut from the project,
+rem MapKit stays whole (-PtargetAbis passed to Gradle, see app/build.gradle.kts).
 rem APK itself is NOT committed to git: already excluded via *.apk in .gitignore.
 setlocal EnableDelayedExpansion
 cd /d "%~dp0"
@@ -23,26 +27,19 @@ if not exist "%JAVA_HOME%\bin\java.exe" (
   exit /b 1
 )
 
-set "TYPE=%~1"
-if "%TYPE%"=="" set "TYPE=release"
-if /i "%TYPE%"=="r" set "TYPE=release"
-if /i "%TYPE%"=="d" set "TYPE=debug"
-
-if /i not "%TYPE%"=="release" if /i not "%TYPE%"=="debug" (
-  echo Usage: %~nx0 [release / debug] [install]
+set "INSTALL=0"
+if /i "%~1"=="install" set "INSTALL=1"
+if not "%~1"=="" if /i not "%~1"=="install" (
+  echo Usage: %~nx0 [install]
   exit /b 2
 )
 
-if /i "%TYPE%"=="release" (
-  set "TASK=assembleRelease"
-  set "SRC=app\build\outputs\apk\release\app-release.apk"
-) else (
-  set "TASK=assembleDebug"
-  set "SRC=app\build\outputs\apk\debug\app-debug.apk"
-)
+set "TASK=assembleRelease"
+set "SRC=app\build\outputs\apk\release\app-release.apk"
+set "EXTRA=-PtargetAbis=arm64-v8a,armeabi-v7a"
 
-echo === FogMap: building %TYPE% (%TASK%) ===
-call gradlew.bat %TASK% --console=plain "-Dorg.gradle.java.home=%JAVA_HOME%"
+echo === FogMap: building release (%TASK%) %EXTRA% ===
+call gradlew.bat %TASK% --console=plain "-Dorg.gradle.java.home=%JAVA_HOME%" %EXTRA%
 if errorlevel 1 (
   echo.
   echo [ERROR] Build failed. See the log above.
@@ -57,22 +54,23 @@ if not exist "%SRC%" (
 )
 
 if not exist "dist" mkdir "dist"
+if not exist "dist\archive" mkdir "dist\archive"
 
 for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmm"') do set "TS=%%i"
-set "DATED=dist\FogMap-!TYPE!-!TS!.apk"
-set "LATEST=dist\FogMap-!TYPE!-latest.apk"
+set "DATED=dist\archive\FogMap-release-!TS!.apk"
+set "LATEST=dist\FogMap-release-latest.apk"
 
 copy /y "%SRC%" "%DATED%" >nul
 copy /y "%SRC%" "%LATEST%" >nul
 
 echo.
 echo [OK] Done:
-echo   %DATED%
-echo   %LATEST%  -- install this one, it is always the freshest
+echo   TAKE THIS: %LATEST%  -- install it on the phone
+echo   (history copy: %DATED%)
 echo.
 for %%F in ("%LATEST%") do echo   Size: %%~zF bytes
 
-if /i "%~2"=="install" (
+if "%INSTALL%"=="1" (
   echo.
   echo === Installing on device ===
   where adb >nul 2>&1

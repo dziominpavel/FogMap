@@ -14,6 +14,10 @@ if (localPropertiesFile.exists()) {
 }
 val mapkitApiKey: String =
     (System.getenv("MAPKIT_API_KEY") ?: localProps.getProperty("MAPKIT_API_KEY") ?: "YOUR_API_KEY")
+// ABI для упаковки APK: задает build-apk.bat через -PtargetAbis (напр. "arm64-v8a,armeabi-v7a").
+// Без свойства — все ABI из зависимостей (нужно для debug на эмуляторе x86_64).
+// Это НЕ вырезание кода из проекта: MapKit остается целиком, выбирается лишь что класть в APK.
+val targetAbis: String? = findProperty("targetAbis") as String?
 
 android {
     namespace = "ru.fogmap"
@@ -41,6 +45,11 @@ android {
                 "proguard-rules.pro"
             )
             signingConfig = signingConfigs.getByName("debug")
+            // Release для живых телефонов: эмуляторные x86/x86_64 в APK не кладем.
+            // Debug не трогаем — эмулятору нужен x86_64.
+            if (!targetAbis.isNullOrBlank()) {
+                ndk { abiFilters += targetAbis.split(",").map { it.trim() } }
+            }
         }
         debug {
             applicationIdSuffix = ".dev"
