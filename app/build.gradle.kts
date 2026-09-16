@@ -18,6 +18,14 @@ val mapkitApiKey: String =
 // Без свойства — все ABI из зависимостей (нужно для debug на эмуляторе x86_64).
 // Это НЕ вырезание кода из проекта: MapKit остается целиком, выбирается лишь что класть в APK.
 val targetAbis: String? = findProperty("targetAbis") as String?
+// Единый релизный кейстор на всех машинах: иначе сборки с разных ПК подписываются разными
+// debug-ключами и телефон требует сноса приложения при обновлении. Путь/пароли — только
+// в local.properties (вне git). Кейстора нет (CI, свежая машина) — fallback на debug-подпись.
+val releaseStoreProp = localProps.getProperty("RELEASE_STORE_FILE")?.takeIf { it.isNotBlank() }
+val hasReleaseKeystore = releaseStoreProp != null && rootProject.file(releaseStoreProp).exists()
+if (releaseStoreProp != null && !hasReleaseKeystore) {
+    logger.warn("RELEASE_STORE_FILE=$releaseStoreProp, но файла нет — release подписывается debug-ключом!")
+}
 
 android {
     namespace = "ru.fogmap"
@@ -36,6 +44,17 @@ android {
         buildConfigField("String", "MAPKIT_API_KEY", "\"$mapkitApiKey\"")
     }
 
+    if (hasReleaseKeystore) {
+        signingConfigs {
+            create("release") {
+                storeFile = rootProject.file(releaseStoreProp!!)
+                storePassword = localProps.getProperty("RELEASE_STORE_PASSWORD")
+                keyAlias = localProps.getProperty("RELEASE_KEY_ALIAS") ?: "fogmap"
+                keyPassword = localProps.getProperty("RELEASE_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -44,7 +63,11 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (hasReleaseKeystore) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
             // Release для живых телефонов: эмуляторные x86/x86_64 в APK не кладем.
             // Debug не трогаем — эмулятору нужен x86_64.
             if (!targetAbis.isNullOrBlank()) {

@@ -5,3 +5,9 @@ MAPKIT_API_KEY=YOUR_API_KEY
 # sdk.dir=C\:\\Users\\<твое_имя>\\AppData\\Local\\Android\\Sdk
 # (если задан ANDROID_HOME, эту строку можно вообще удалить)
 sdk.dir=C\:\\Users\\<твое_имя>\\AppData\\Local\\Android\\Sdk
+# Единый релизный кейстор (ОДИН файл на все машины! на второй машине — скопировать .jks, НЕ генерировать новый).
+# Сгенерировать: keytool -genkeypair -v -keystore keystore/fogmap-release.jks -alias fogmap -keyalg RSA -keysize 2048 -validity 10000
+RELEASE_STORE_FILE=keystore/fogmap-release.jks
+RELEASE_STORE_PASSWORD=
+RELEASE_KEY_ALIAS=fogmap
+RELEASE_KEY_PASSWORD=
