@@ -15,7 +15,9 @@ jobs:
           distribution: temurin
           java-version: "17"
           cache: gradle
-      - uses: android-actions/setup-android@v3
+      # Без android-actions/setup-android: ubuntu-раннеры уже содержат Android SDK
+      # (и принятые лицензии), а экшен падал на скачивании cmdline-tools.
+      # Недостающее AGP докачивает сам (так же ставит Build-Tools локально).
       - name: unit tests
         run: ./gradlew :app:testDebugUnitTest --console=plain
       - name: assemble release-arm
