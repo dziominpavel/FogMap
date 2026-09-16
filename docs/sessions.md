@@ -164,3 +164,57 @@ expedited-BootWorker; без ключа — заглушка вместо кар
   устройствах (сейчас release подписан debug-ключом).
 - Без Play Services заглушка реализована, но проверена только кодом (нет
   AOSP-образа без GMS в SDK).
+
+---
+
+## 2026-09-16 — Домашний дебаг на Huawei P60 Pro: краш карты + итерации тумана
+
+Контекст: ветка main, mvp-foundation заархивирован, задача 6.2 открыта.
+Кейстор с рабочего ПК еще не скопирован (папки keystore/ дома нет — так и должно
+быть: `*.jks` в `.gitignore`, файл едет вручную). Проверки шли на debug-сборке
+(`ru.fogmap.dev`, ставится рядом с релизом `ru.fogmap`, данные релиза не трогает).
+
+Сделали:
+- Поймали краш «карта открывается и падает» на Huawei P60 Pro (MNA-LX9,
+  Android 12 / SDK 31, microG GmsCore + FakeStore). Диагноз по tombstone:
+  нативный SIGABRT `Abort message: 'Invoked not in UI thread.'`,
+  `libmaps-mobile.so!MapBinding_getCameraPosition` из потока `DefaultDispatch`.
+  Причина: `FogLayer` читал камеру/регион из `launch(Dispatchers.IO)`.
+  Фикс: вся работа с MapKit — только на Main, в IO лишь Room + склейка
+  (`withContext`). Проверено: холодный старт + 45 с — процесс жив.
+  Зафиксировано в `decisions.md`.
+- Попутно выяснено: `add/removeCameraListener` в MapKit Full 4.42.0 принимают
+  именно `WeakReference<CameraListener>` — прямую передачу компилятор не берет.
+- По живой проверке владельца: туман темнее (`FOG_FILL` 0xB3 → 0xD9, ~85%),
+  первый рендер без дебаунса, вуаль мгновенно при отдалении (старые полигоны
+  покрывают лишь прошлый viewport — была вспышка голой карты), кнопка «Где я»
+  → круглый FAB справа внизу, стартовая камера с последней Fused-локации
+  (fallback Москва), пеший радиус 100 → 50 м (дырка была 3×3=300 м, стал крест
+  из 5 клеток; спека `fog-grid` и `FogGridTest` обновлены). Уже открытые клетки
+  не схлопываются — новый размер виден только на новых точках.
+- Правило от владельца: файлы с секретами (`local.properties`) целиком не открывать,
+  только маскированные проверки (задан/пуст, длина). Причина — содержимое чтения
+  попадает в контекст сессии.
+
+Шпаргалка для будущих дебаг-сессий (дом):
+- adb уже в PATH (`adb devices` хватает); полный путь:
+  `C:\Users\Dziom\AppData\Local\Android\Sdk\platform-tools\adb.exe`.
+  Телефон: serial `8KB0223427004071`, пакеты `ru.fogmap` (релиз) / `ru.fogmap.dev` (дебаг).
+- JDK 17: `C:\Users\Dziom\.gradle\jdks\eclipse_adoptium-17-amd64-windows.2`
+  (дефолтная java — 25, для сборки всегда `-Dorg.gradle.java.home=<этот путь>`).
+- Цикл проверки: `assembleDebug` → `adb uninstall ru.fogmap.dev` (ставить `-r`
+  поверх ВИСНЕТ без вывода — только через снос!) → `adb install ...app-debug.apk`
+  → `pm grant ... ACCESS_FINE/COARSE_LOCATION` (слетают при сносе) →
+  `am start -n ru.fogmap.dev/ru.fogmap.MainActivity` → 45 с → `pidof` + лог.
+- Лог краша: `adb logcat -d | Select-String 'FATAL EXCEPTION|Fatal signal|has died'`;
+  нативный стектрейс: `adb logcat -d -b crash` (tombstone от DEBUG).
+- Дебаг-APK толстый (~все ABI, без `-PtargetAbis`) — установка по USB долгая,
+  таймауты команд ставить с запасом; выводы `adb install` при зависании не будет.
+
+Открытые вопросы:
+- Скопировать `keystore/fogmap-release.jks` с рабочего ПК (НЕ генерировать);
+  сверить `RELEASE_*`-пароли — дома оба равны хвосту API-ключа, похоже на копипаст.
+- Автотест на машине по городу (200/500 м), визуальный ок владельца по темноте/FAB.
+- Ограничения ключа MapKit в кабинете Яндекса (пакет `ru.fogmap`).
+- Изменения сессии не коммичены: `FogGrid.kt`, `FogLayer.kt`, `MapScreen.kt`,
+  `FogGridTest.kt`, `fog-grid/spec.md`, `decisions.md`, `sessions.md`.

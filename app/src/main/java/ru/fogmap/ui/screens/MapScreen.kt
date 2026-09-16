@@ -8,8 +8,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.unit.dp
 import androidx.compose.material3.Button
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
@@ -25,9 +29,12 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.navigation.NavController
+import com.yandex.mapkit.Animation
 import com.yandex.mapkit.geometry.Point
 import com.yandex.mapkit.map.CameraPosition
 import com.yandex.mapkit.mapview.MapView
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
 import kotlinx.coroutines.launch
 import ru.fogmap.FogMapApp
 import ru.fogmap.data.PrefsKeys
@@ -102,6 +109,41 @@ fun MapScreen(nav: NavController) {
                 mapWindow.map.move(CameraPosition(Point(55.7558, 37.6173), 14f, 0f, 0f))
             }
         }
+        // Камера на текущую геолокацию: стартовая (чтобы не открываться в Москве)
+        // и кнопка «Где я». Всё через runCatching: microG может вернуть null.
+        // Вызывать только с UI-потока (MapKit роняет процесс из фона).
+        fun moveToMyLocation(zoom: Float) {
+            runCatching {
+                val client = LocationServices.getFusedLocationProviderClient(context)
+                client.lastLocation.addOnSuccessListener { loc ->
+                    if (loc != null) {
+                        runCatching {
+                            mapView.mapWindow.map.move(
+                                CameraPosition(Point(loc.latitude, loc.longitude), zoom, 0f, 0f),
+                                Animation(Animation.Type.SMOOTH, 0.8f), null
+                            )
+                        }
+                    } else {
+                        runCatching {
+                            client.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
+                                .addOnSuccessListener { fresh ->
+                                    if (fresh != null) {
+                                        runCatching {
+                                            mapView.mapWindow.map.move(
+                                                CameraPosition(
+                                                    Point(fresh.latitude, fresh.longitude),
+                                                    zoom, 0f, 0f
+                                                ),
+                                                Animation(Animation.Type.SMOOTH, 0.8f), null
+                                            )
+                                        }
+                                    }
+                                }
+                        }
+                    }
+                }
+            }
+        }
         DisposableEffect(lifecycle, mapView) {
             val fog = FogLayer(mapView, app.container.fogRepository, scope)
             val observer = LifecycleEventObserver { _, event ->
@@ -112,6 +154,8 @@ fun MapScreen(nav: NavController) {
                 }
             }
             lifecycle.addObserver(observer)
+            // Сразу к своей точке вместо Москвы (если локация известна).
+            moveToMyLocation(15f)
             onDispose {
                 lifecycle.removeObserver(observer)
                 runCatching { fog.stop() }
@@ -125,6 +169,11 @@ fun MapScreen(nav: NavController) {
                 },
                 modifier = Modifier.align(Alignment.TopEnd).padding(16.dp)
             ) { Text(if (isPaused) "Продолжить" else "Пауза") }
+            // Круглая кнопка геолокации справа внизу — как в обычных картах.
+            FloatingActionButton(
+                onClick = { moveToMyLocation(16f) },
+                modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp)
+            ) { Icon(Icons.Filled.MyLocation, contentDescription = "Моя геолокация") }
         }
     }
 }

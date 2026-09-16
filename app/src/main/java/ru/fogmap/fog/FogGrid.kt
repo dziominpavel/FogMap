@@ -13,7 +13,7 @@ import kotlin.math.tan
  * Храним только открытые ячейки visited_cells(x, y).
  *
  * Радиус открытия — круг ячеек вокруг точки по скорости провайдера:
- * - до 10 км/ч → ~100 м
+ * - до 10 км/ч → ~50 м (одна точка пешком — крест из 5 клеток, не 3×3)
  * - 10–50 км/ч → ~200 м
  * - выше 50 км/ч → ~500 м
  *
@@ -28,7 +28,7 @@ object FogGrid {
     const val SPEED_WALK_MS = 2.7778
     const val SPEED_DRIVE_MS = 13.8889
 
-    const val RADIUS_WALK_M = 100.0
+    const val RADIUS_WALK_M = 50.0
     const val RADIUS_MID_M = 200.0
     const val RADIUS_FAST_M = 500.0
 

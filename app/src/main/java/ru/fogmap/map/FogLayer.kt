@@ -13,6 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import ru.fogmap.data.FogRepository
 import ru.fogmap.fog.FogGrid
 import kotlin.math.floor
@@ -31,13 +32,30 @@ class FogLayer(
 ) {
     private val cache = RectCache()
     private var job: Job? = null
+    private var lastZoom: Float? = null
 
-    private val cameraListener = CameraListener { _, _, _, _ -> scheduleRebuild() }
+    private val cameraListener = CameraListener { map, pos, _, _ ->
+        // Отдаление: старые полигоны покрывают лишь прошлый (меньший) viewport,
+        // периферия на секунду вспыхивает голой картой. Кладем сплошную вуаль
+        // сразу и синхронно (дешево — один полигон), точные дырки дорисует
+        // дебаунснутый rebuild. При пане/приближении старые полигоны и так
+        // покрывают область — вуаль не нужна, чтобы не было мерцания дырок.
+        // Колбэк MapKit приходит в UI-потоке — нативу это разрешено.
+        if (lastZoom != null && pos.zoom < lastZoom!! - 0.01f) {
+            runCatching { drawSolidFog(map) }
+        }
+        lastZoom = pos.zoom
+        scheduleRebuild()
+    }
     private val cameraListenerRef = java.lang.ref.WeakReference(cameraListener)
 
     fun start() {
+        // MapKit 4.42.0 принимает слушателя именно как WeakReference (свой тип
+        // параметра) — прямую передачу CameraListener компилятор не принимает.
         mapView.mapWindow.map.addCameraListener(cameraListenerRef)
-        scheduleRebuild()
+        // Первый рендер — без дебаунса: иначе карта секунду стоит голая
+        // и туман «догоняет» с заметной задержкой.
+        scheduleRebuild(immediate = true)
     }
 
     fun stop() {
@@ -45,10 +63,15 @@ class FogLayer(
         job?.cancel()
     }
 
-    private fun scheduleRebuild() {
+    private fun scheduleRebuild(immediate: Boolean = false) {
         job?.cancel()
-        job = scope.launch(Dispatchers.IO) {
-            delay(250) // дебаунс пан/зум
+        // Весь доступ к объектам MapKit — только в UI-потоке: натив роняет
+        // процесс SIGABRT 'Invoked not in UI thread' (найдено на Huawei P60 Pro,
+        // бэктрейс: MapBinding_getCameraPosition из DefaultDispatch).
+        // Поэтому корутина живет на Main (scope — rememberCoroutineScope),
+        // а тяжелое (БД-запрос + склейка) уезжает в IO через withContext.
+        job = scope.launch {
+            if (!immediate) delay(250) // дебаунс пан/зум
             rebuild()
         }
     }
@@ -58,7 +81,7 @@ class FogLayer(
         val pos: CameraPosition = map.cameraPosition
         // Мелкие зумы: агрегация — сплошной туман без дырок (лимит полигонов).
         if (pos.zoom < AGGREGATE_ZOOM) {
-            scope.launch(Dispatchers.Main) { drawSolidFog(map) }
+            drawSolidFog(map)
             return
         }
         val region = map.visibleRegion
@@ -73,21 +96,24 @@ class FogLayer(
         val y0 = minOf(c1.y, c2.y); val y1 = maxOf(c1.y, c2.y)
         // Лимит viewport: не больше 400×400 клеток за раз (защита от перегрузки).
         if ((x1 - x0) > MAX_SPAN || (y1 - y0) > MAX_SPAN) {
-            scope.launch(Dispatchers.Main) { drawSolidFog(map) }
+            drawSolidFog(map)
             return
         }
-        val visited = fogRepository.cellsInViewport(x0, x1, y0, y1)
-            .map { FogGrid.Cell(it.x, it.y) }.toSet()
+        // Тяжелое в IO; рисование — обратно на Main (мы и так на Main).
+        val rects = withContext(Dispatchers.IO) {
+            val visited = fogRepository.cellsInViewport(x0, x1, y0, y1)
+                .map { FogGrid.Cell(it.x, it.y) }.toSet()
 
-        // Туман = дополнение: все клетки viewport минус открытые.
-        val fogCells = HashSet<FogGrid.Cell>()
-        for (x in x0..x1) for (y in y0..y1) {
-            val c = FogGrid.Cell(x, y)
-            if (c !in visited) fogCells.add(c)
+            // Туман = дополнение: все клетки viewport минус открытые.
+            val fogCells = HashSet<FogGrid.Cell>()
+            for (x in x0..x1) for (y in y0..y1) {
+                val c = FogGrid.Cell(x, y)
+                if (c !in visited) fogCells.add(c)
+            }
+            val key = "$x0,$x1,$y0,$y1:${visited.hashCode()}"
+            cache.getOrPut(key) { FogRects.merge(fogCells) }
         }
-        val key = "$x0,$x1,$y0,$y1:${visited.hashCode()}"
-        val rects = cache.getOrPut(key) { FogRects.merge(fogCells) }
-        scope.launch(Dispatchers.Main) { drawRects(map, rects) }
+        drawRects(map, rects)
     }
 
     private fun drawSolidFog(map: Map) {
@@ -125,7 +151,7 @@ class FogLayer(
     companion object {
         const val AGGREGATE_ZOOM = 11f
         const val MAX_SPAN = 400
-        const val FOG_FILL = 0xB3141B2E.toInt() // полупрозрачный темный слой
+        const val FOG_FILL = 0xD9141B2E.toInt() // темный слой ~85%: улицы еле видны
 
         /** Геометрия ячейки -> углы (WebMercator, зум [FogGrid.GRID_ZOOM]). */
         fun cellTopLeft(x: Int, y: Int): Pair<Double, Double> {

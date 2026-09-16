@@ -32,9 +32,9 @@ class FogGridTest {
 
     @Test
     fun `пороги радиуса по скорости`() {
-        assertEquals(100.0, FogGrid.radiusForSpeed(null), 0.0)
-        assertEquals(100.0, FogGrid.radiusForSpeed(0f), 0.0)
-        assertEquals(100.0, FogGrid.radiusForSpeed(2.77f), 0.0)
+        assertEquals(50.0, FogGrid.radiusForSpeed(null), 0.0)
+        assertEquals(50.0, FogGrid.radiusForSpeed(0f), 0.0)
+        assertEquals(50.0, FogGrid.radiusForSpeed(2.77f), 0.0)
         assertEquals(200.0, FogGrid.radiusForSpeed(2.78f), 0.0)
         assertEquals(200.0, FogGrid.radiusForSpeed(10f), 0.0)
         assertEquals(500.0, FogGrid.radiusForSpeed(13.9f), 0.0)
