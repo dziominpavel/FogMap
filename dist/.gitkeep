@@ -1,0 +1,1 @@
+APK files built by build-apk.bat land here and are ignored by git (*.apk in .gitignore).
