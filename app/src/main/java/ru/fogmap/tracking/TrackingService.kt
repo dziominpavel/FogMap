@@ -192,7 +192,7 @@ class TrackingService : LifecycleService() {
         return NotificationCompat.Builder(this, CHANNEL)
             .setContentTitle(if (paused) "FogMap на паузе" else "FogMap пишет трек")
             .setContentText(if (paused) "Нажмите, чтобы продолжить запись" else "Туман открывается")
-            .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+            .setSmallIcon(R.drawable.ic_stat_fog)
             .setContentIntent(openApp)
             .setOngoing(true)
             .addAction(

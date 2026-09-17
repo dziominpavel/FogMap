@@ -28,7 +28,9 @@ import kotlin.math.floor
 class FogLayer(
     private val mapView: MapView,
     private val fogRepository: FogRepository,
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
+    private val fogFill: Int = FOG_FILL_DARK,
+    private val borderColor: Int = FOG_BORDER_DARK
 ) {
     private val cache = RectCache()
     private var job: Job? = null
@@ -144,14 +146,29 @@ class FogLayer(
             holes.map { LinearRing(it) }
         )
         val obj = map.mapObjects.addPolygon(polygon)
-        obj.fillColor = FOG_FILL
-        obj.strokeWidth = 0f
+        obj.fillColor = fogFill
+        obj.strokeColor = borderColor
+        obj.strokeWidth = FOG_BORDER_WIDTH
     }
 
     companion object {
         const val AGGREGATE_ZOOM = 11f
         const val MAX_SPAN = 400
-        const val FOG_FILL = 0xD9141B2E.toInt() // темный слой ~85%: улицы еле видны
+        // Спайк 4.1, зафиксировано из токенов темы (зумы 14–16, проверка на
+        // устройстве — в приемке 5.2):
+        // - темная вуаль 85% фона #0F1419 на ночной карте, граница мята #6EE7B7;
+        // - светлая вуаль 70% бумаги #F6F8F7 на дневной, граница #059669.
+        const val FOG_FILL_DARK = 0xD90F1419.toInt()
+        const val FOG_FILL_LIGHT = 0xB3F6F8F7.toInt()
+        const val FOG_BORDER_DARK = 0xFF6EE7B7.toInt()
+        const val FOG_BORDER_LIGHT = 0xFF059669.toInt()
+        const val FOG_BORDER_WIDTH = 2f
+        /**
+         * Ручной fallback на дневную карту при темной оболочке (4.2):
+         * выставить true одной строкой, если спайк на устройстве покажет
+         * плохой контраст тумана в ночном режиме.
+         */
+        const val FORCE_DAY_MAP = false
 
         /** Геометрия ячейки -> углы (WebMercator, зум [FogGrid.GRID_ZOOM]). */
         fun cellTopLeft(x: Int, y: Int): Pair<Double, Double> {

@@ -12,6 +12,7 @@ import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import kotlinx.coroutines.flow.first
 import ru.fogmap.FogMapApp
+import ru.fogmap.R
 import ru.fogmap.data.PrefsKeys
 
 /**
@@ -67,7 +68,7 @@ class BootWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         val notification = NotificationCompat.Builder(applicationContext, TrackingService.CHANNEL)
             .setContentTitle("FogMap запускает трекинг")
             .setContentText("Восстановление записи после перезагрузки")
-            .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+            .setSmallIcon(R.drawable.ic_stat_fog)
             .setOngoing(true)
             .build()
         return if (Build.VERSION.SDK_INT >= 29) {

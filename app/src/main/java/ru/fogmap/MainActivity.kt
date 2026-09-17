@@ -3,24 +3,31 @@ package ru.fogmap
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.yandex.mapkit.MapKitFactory
+import ru.fogmap.data.ThemeModes
 import ru.fogmap.ui.screens.HistoryDetailScreen
 import ru.fogmap.ui.screens.HistoryScreen
 import ru.fogmap.ui.screens.MapScreen
 import ru.fogmap.ui.screens.OnboardingScreen
 import ru.fogmap.ui.screens.SettingsScreen
 import ru.fogmap.ui.screens.StatsScreen
+import ru.fogmap.ui.theme.FogMapTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme {
+            // Тема из DataStore: смена применяется рекомпозицией, без перезапуска.
+            val app = application as FogMapApp
+            val themeMode by app.container.settingsRepository.themeMode
+                .collectAsState(initial = ThemeModes.DEFAULT)
+            FogMapTheme(themeMode) {
                 FogMapNav()
             }
         }

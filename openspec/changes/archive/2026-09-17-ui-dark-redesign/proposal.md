@@ -12,7 +12,7 @@
 - История: карточки треков с иконкой маршрута и датой/км, единый стиль деталей, rename/delete.
 - Настройки: секции Внешний вид / Данные / О программе, опасная зона сброса.
 - Онбординг: степпер 1-2-3 с прогрессом и иллюстрациями.
-- Игровые ассеты в одном стиле: adaptive-иконка приложения, small-icon уведомления, иллюстрации пустых состояний и онбординга (генерация вне репо, исходники в `docs/`, финал в `res/`).
+- Игровые ассеты в одном стиле: adaptive-иконка приложения, small-icon уведомления, иллюстрации пустых состояний и онбординга (генерация вне репо, мастера не коммитятся, финал в `res/`).
 
 ## Capabilities
 
@@ -28,6 +28,6 @@
 ## Impact
 
 - Код: `MainActivity` (FogMapTheme), новый `ui/theme/` (Color/Type/Shape), `BottomBar`, `MapScreen`, `StatsScreen`, `HistoryScreens`, `SettingsScreen`, `OnboardingScreen`, `SettingsRepository` + DataStore ключ `THEME_MODE`, `themes.xml` (DayNight + фон), `AndroidManifest` (иконка).
-- Ресурсы: новые `mipmap-*/ic_launcher*`, `drawable-*/img_*`, `drawable-nodpi`, `mipmap-anydpi-v26/ic_launcher.xml`. Нужна нарезка из мастеров 1024px.
+- Ресурсы: новые `mipmap-*/ic_launcher*`, `mipmap-anydpi-v26/ic_launcher.xml`, `drawable-nodpi/*.webp`, `drawable-*dpi/ic_stat_fog.png`. Нарезка 5.1 уже выполнена.
 - Зависимости: без новых библиотек, только Material3 + MapKit `setNightModeEnabled` (спайк контраста тумана).
 - Системы: бэкенда нет, офлайн-first сохраняется, миграции Room не нужны, крашлитика без изменений.

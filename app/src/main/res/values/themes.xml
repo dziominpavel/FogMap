@@ -1,3 +1,11 @@
 <resources>
-    <style name="Theme.FogMap" parent="android:Theme.Material.Light.NoActionBar" />
+    <!-- DayNight: системные шторки под режим, фон сплэша всегда темный (1.3).
+         Платформенного Theme.Material.DayNight нет, поэтому DeviceDefault. -->
+    <style name="Theme.FogMap" parent="android:Theme.DeviceDefault.DayNight">
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowBackground">@color/splash_background</item>
+        <item name="android:statusBarColor">@color/splash_background</item>
+        <item name="android:navigationBarColor">@color/splash_background</item>
+    </style>
 </resources>

@@ -1,6 +1,6 @@
 ## Context
 
-См. `proposal.md` — Why. Текущее состояние: `MainActivity` использует голый `MaterialTheme`, `themes.xml` — `Theme.Material.Light`, `BottomBar` без иконок (`icon = {}`), `MapScreen` — текстовые `Button` в `TopEnd`, `Stats/History/Settings/Onboarding` — голые `Text`/`Button` без карточек и секций. В `SettingsRepository` только ключи `PAUSED` и `ONBOARDING_DONE`, в `res/` только `values/`, в манифесте системная иконка. Ограничения: только portrait и русский, офлайн-first, без бэкенда, без новых тяжелых зависимостей (MapKit Full и так раздувает APK), атрибуцию Яндекса перекрывать запрещено.
+См. `proposal.md` — Why. Текущее состояние: `MainActivity` использует голый `MaterialTheme`, `themes.xml` — `Theme.Material.Light`, `BottomBar` без иконок (`icon = {}`), `MapScreen` — текстовые `Button` в `TopEnd`, `Stats/History/Settings/Onboarding` — голые `Text`/`Button` без карточек и секций. В `SettingsRepository` только ключи `PAUSED` и `ONBOARDING_DONE`, в `res/` только `values/`, иконка приложения и small-icon уведомления уже разложены (задача 5.1 выполнена). Ограничения: только portrait и русский, офлайн-first, без бэкенда, без новых тяжелых зависимостей (MapKit Full и так раздувает APK), атрибуцию Яндекса перекрывать запрещено.
 
 ## Goals / Non-Goals
 
@@ -18,7 +18,7 @@
 ## Decisions
 
 - **Фиксированные токены вместо Dynamic Color.** Dark default `#0F1419/#1A212B`, primary мята `#6EE7B7`, secondary `#93C5FD`, error `#F87171`; light — бумага `#F6F8F7`, primary `#059669`. Альтернатива dynamic из обоев — отклонена: ломает игровой туман и читаемость вуали, дает непредсказуемый контраст.
-- **Хранение темы строкой `THEME_MODE=dark|light|system` в DataStore, default `dark`.** Альтернатива boolean `dark_only` — отклонена: не покрывает системный режим, будущие миграции сложнее. Room-миграция не нужна.
+- **Хранение темы строкой `theme_mode=dark|light|system` в DataStore, default `dark`.** Конвенция строчных ключей как у `paused`/`onboarding_done`. Альтернатива boolean `dark_only` — отклонена: не покрывает системный режим, будущие миграции сложнее. Room-миграция не нужна.
 - **Тема через состояние в `MainActivity`, `isSystemInDarkTheme()` для `system`.** Перерисовка всего `NavHost` при смене, без recreate Activity. Альтернатива `AppCompatDelegate` — лишняя для чистого Compose.
 - **`themes.xml` → `DayNight` родитель + `windowBackground #0F1419`, статус-бар под тему.** Чтобы сплэш не мигал белым перед темным Compose.
 - **Иконки навигации/FAB — Material Symbols из `material-icons-extended`.** Кастомная генерация только для launcher, notification и иллюстраций. Причина: системные иконки уже векторные, держат стиль, не пухнет APK.
@@ -38,12 +38,11 @@
 
 ## Migration Plan
 
-1. Добавить `THEME_MODE` в DataStore с default `dark` — старые установки получат темную без миграции.
+1. Добавить `theme_mode` в DataStore с default `dark` — старые установки получат темную без миграции.
 2. Ввести `ui/theme/`, переключить `MainActivity` и `themes.xml`, затем по одному экрану: BottomBar → Map → Stats/History → Settings → Onboarding.
 3. Положить ассеты, переключить иконку в манифесте, прогнать сплэш и ночной режим.
 4. Rollback: вернуть default `light` и дневную карту одной строкой, ассеты остаются — визуально безопасно.
 
 ## Open Questions
 
-- Маскот-лис финальный или заменить на другого проводника до генерации всех 10 картинок.
 - Итог спайка ночной карты: точные альфа вуали и цвет границы для dark/light.
