@@ -1,5 +1,6 @@
 package ru.fogmap
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -35,5 +36,25 @@ class LocationFilterTest {
     @Test
     fun `точка без accuracy отбрасывается`() {
         assertFalse(LocationFilter.accept(LocationFilter.Input(null, 1f, false)))
+    }
+
+    @Test
+    fun `причины отбросов различаются`() {
+        assertEquals(
+            LocationFilter.Reason.BAD_ACCURACY,
+            LocationFilter.reason(LocationFilter.Input(60f, 1f, false))
+        )
+        assertEquals(
+            LocationFilter.Reason.BAD_SPEED,
+            LocationFilter.reason(LocationFilter.Input(10f, 50f, false))
+        )
+        assertEquals(
+            LocationFilter.Reason.MOCK,
+            LocationFilter.reason(LocationFilter.Input(5f, 1f, true))
+        )
+        assertEquals(
+            LocationFilter.Reason.OK,
+            LocationFilter.reason(LocationFilter.Input(10f, 1f, false))
+        )
     }
 }

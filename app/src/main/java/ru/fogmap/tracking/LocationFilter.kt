@@ -16,12 +16,23 @@ object LocationFilter {
         val isMock: Boolean
     )
 
-    fun accept(i: Input): Boolean {
-        if (i.isMock) return false
-        val acc = i.accuracy ?: return false
-        if (acc > MAX_ACCURACY_M || acc <= 0) return false
-        val s = i.speed
-        if (s != null && s > MAX_SPEED_MS) return false
-        return true
+    /** Причина решения (tracking-reliability 3.1): каждый отброс объяснен. */
+    enum class Reason(val key: String) {
+        OK("ok"),
+        MOCK("mock"),
+        NO_ACCURACY("accuracy"),
+        BAD_ACCURACY("accuracy"),
+        BAD_SPEED("speed")
     }
+
+    fun reason(i: Input): Reason {
+        if (i.isMock) return Reason.MOCK
+        val acc = i.accuracy ?: return Reason.NO_ACCURACY
+        if (acc > MAX_ACCURACY_M || acc <= 0) return Reason.BAD_ACCURACY
+        val s = i.speed
+        if (s != null && s > MAX_SPEED_MS) return Reason.BAD_SPEED
+        return Reason.OK
+    }
+
+    fun accept(i: Input): Boolean = reason(i) == Reason.OK
 }

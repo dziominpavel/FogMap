@@ -37,6 +37,9 @@ class BootWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         val app = applicationContext as? FogMapApp ?: return Result.failure()
         val paused = app.container.dataStore.data.first()[PrefsKeys.PAUSED] ?: false
         Log.i(TAG, "boot-restart: paused=$paused")
+        // Watchdog на случай будущих убийств (tracking-reliability 2.2).
+        // KEEP-политика делает повторное расписание no-op.
+        runCatching { TrackingWatchdogWorker.schedule(applicationContext) }
         if (paused) return Result.success()
         val play = TrackingPreconditions.playServicesAvailable(applicationContext)
         val track = TrackingService.canTrack(applicationContext)

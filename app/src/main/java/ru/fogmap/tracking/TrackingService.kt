@@ -28,11 +28,9 @@ import kotlinx.coroutines.launch
 import ru.fogmap.FogMapApp
 import ru.fogmap.MainActivity
 import ru.fogmap.R
+import ru.fogmap.data.FogRepository
 import ru.fogmap.data.PrefsKeys
 import ru.fogmap.data.RawPoint
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 /**
  * Фоновый трекинг (spec tracking, задачи 3.1–3.3):
@@ -43,8 +41,20 @@ import java.util.Locale
 class TrackingService : LifecycleService() {
 
     private val buffer = mutableListOf<RawPoint>()
+    /** Отбросы текущей пачки: причина -> count (tracking-reliability 3.1). */
+    private val rejected = mutableMapOf<String, Long>()
     private var trackId: Long = -1
     private var flushJob: Job? = null
+    /** Дата текущего суток-чанка (trust-v2 3.1): полночь режет чанк. */
+    private var chunkDate: java.time.LocalDate = java.time.LocalDate.now()
+    /** Момент последней доставки Fused (любой, даже отброшенной). */
+    private var lastFixTime: Long = System.currentTimeMillis()
+    /** Кэш флага паузы (gps-trust-filter): вердикт и запись — синхронно в колбэке. */
+    @Volatile
+    private var pausedCached: Boolean = false
+    /** Состояние движка доверия + окно истории записанных точек. */
+    private var trustPrev: TrustEngine.PrevState? = null
+    private val trustHistory = ArrayDeque<TrustEngine.HistPoint>()
 
     private val callback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
@@ -70,20 +80,22 @@ class TrackingService : LifecycleService() {
         lifecycleScope.launch {
             val container = (application as FogMapApp).container
             // Подписка на паузу: при включенной паузе точки не пишем.
+            // Флаг дублируется в pausedCached, чтобы onRawLocation оставался
+            // синхронным (вердикт + запись без гонок между колбэками).
             launch {
                 container.dataStore.data.collect { prefs ->
                     val paused = prefs[PrefsKeys.PAUSED] ?: false
+                    pausedCached = paused
                     updateNotification(paused)
                 }
             }
-            // Старт трека и Fused-подписка (предусловия уже проверены выше).
-            trackId = container.trackRepository.startTrack(
-                SimpleDateFormat("d MMMM, HH:mm", Locale("ru")).format(Date())
-            )
+            // Старт суток-чанка и Fused-подписка (предусловия уже проверены выше).
+            trackId = container.trackRepository.startDayChunk()
+            chunkDate = java.time.LocalDate.now()
             subscribeFused()
             flushJob = launch {
                 while (true) {
-                    delay(30_000)
+                    delay(FLUSH_INTERVAL_MS)
                     flush()
                 }
             }
@@ -91,41 +103,115 @@ class TrackingService : LifecycleService() {
     }
 
     private fun onRawLocation(loc: Location) {
+        lastFixTime = System.currentTimeMillis()
         @Suppress("DEPRECATION")
         val isMock = if (Build.VERSION.SDK_INT >= 31) loc.isMock else loc.isFromMockProvider
-        val ok = LocationFilter.accept(
-            LocationFilter.Input(
-                accuracy = if (loc.hasAccuracy()) loc.accuracy else null,
-                speed = if (loc.hasSpeed()) loc.speed else null,
-                isMock = isMock
-            )
+        val input = LocationFilter.Input(
+            accuracy = if (loc.hasAccuracy()) loc.accuracy else null,
+            speed = if (loc.hasSpeed()) loc.speed else null,
+            isMock = isMock
         )
-        if (!ok) return
-        lifecycleScope.launch {
-            val paused = (application as FogMapApp).container
-                .dataStore.data.first()[PrefsKeys.PAUSED] ?: false
-            if (paused) return@launch
+        val reason = LocationFilter.reason(input)
+        if (reason != LocationFilter.Reason.OK) {
             synchronized(buffer) {
-                buffer.add(
-                    RawPoint(
-                        time = loc.time, lat = loc.latitude, lon = loc.longitude,
-                        acc = loc.accuracy, speed = if (loc.hasSpeed()) loc.speed else null
-                    )
-                )
-                if (buffer.size >= 20) launch { flush() }
+                rejected[reason.key] = (rejected[reason.key] ?: 0) + 1
             }
+            return
+        }
+        // Доверие по последовательности (gps-trust-filter): вердикт считается
+        // синхронно в колбэке, история — только записанные точки.
+        val hp = TrustEngine.HistPoint(
+            time = loc.time, lat = loc.latitude, lon = loc.longitude, acc = loc.accuracy
+        )
+        synchronized(buffer) {
+            if (pausedCached) {
+                rejected[FogRepository.REJECT_PAUSED] =
+                    (rejected[FogRepository.REJECT_PAUSED] ?: 0) + 1
+                return
+            }
+            val verdict = TrustEngine.evaluate(trustPrev, trustHistory.toList(), hp)
+            trustPrev = verdict.next
+            verdict.countReject?.let { key ->
+                rejected[key] = (rejected[key] ?: 0) + 1
+            }
+            // Раздельные ворота (spec tracking): точка пишется всегда
+            // с полным вердиктом, туман — только подтвержденным (ворота C).
+            buffer.add(
+                RawPoint(
+                    time = loc.time, lat = loc.latitude, lon = loc.longitude,
+                    acc = loc.accuracy, speed = if (loc.hasSpeed()) loc.speed else null,
+                    trust = verdict.trust, openFog = verdict.openFog,
+                    state = verdict.state.name, rejectReason = verdict.countReject
+                )
+            )
+            trustHistory.addLast(hp)
+            while (trustHistory.size > TrustEngine.HISTORY_MAX) trustHistory.removeFirst()
+            if (buffer.size >= FLUSH_SIZE) lifecycleScope.launch { flush() }
         }
     }
 
     private suspend fun flush() {
+        // suspend-вызовы — строго вне synchronized (иначе critical section).
+        val starved: Boolean = synchronized(buffer) {
+            buffer.isEmpty() && rejected.isEmpty()
+        }
+        if (starved) {
+            flushIfStarved()
+            return
+        }
         val batch: List<RawPoint> = synchronized(buffer) {
-            if (buffer.isEmpty()) return
             val copy = buffer.toList()
             buffer.clear()
             copy
         }
+        val rej: Map<String, Long> = synchronized(buffer) {
+            val copy = rejected.toMap()
+            rejected.clear()
+            copy
+        }
         val container = (application as FogMapApp).container
-        runCatching { container.fogRepository.appendPoints(trackId, batch) }
+        runCatching {
+            // Граница суток: новый чанк до записи (коридор через полночь
+            // не тянется — у нового трека нет хвоста, честно по spec).
+            val today = java.time.LocalDate.now()
+            if (today != chunkDate) {
+                trackId = container.trackRepository.startDayChunk(today)
+                chunkDate = today
+            }
+            if (batch.isNotEmpty()) container.fogRepository.appendPoints(trackId, batch)
+            if (rej.isNotEmpty()) container.fogRepository.recordRejected(rej)
+        }
+    }
+
+    /**
+     * Тишина Fused (tracking-reliability 3.1, причина no-fix): доставок нет дольше
+     * порога при выключенной паузе — фиксируем интервал без фиксов, чтобы дыра
+     * была объяснена, а не пустой. Вызывается только когда писать нечего.
+     */
+    private suspend fun flushIfStarved() {
+        if (System.currentTimeMillis() - lastFixTime < NO_FIX_GAP_MS) return
+        val container = (application as FogMapApp).container
+        val paused = runCatching {
+            container.dataStore.data.first()[PrefsKeys.PAUSED] ?: false
+        }.getOrDefault(false)
+        if (paused || !canTrack(this)) return
+        // Дроссель: не чаще одного no-fix за порог (сдвигаем метку).
+        lastFixTime = System.currentTimeMillis()
+        runCatching {
+            container.fogRepository.recordRejected(mapOf(FogRepository.REJECT_NO_FIX to 1))
+        }
+    }
+
+    /**
+     * Best-effort сброс при убийстве (tracking-reliability 2.1): потери
+     * ограничиваются одним flush-интервалом вместо 30 сек молча.
+     */
+    private fun flushBlocking() {
+        runCatching {
+            kotlinx.coroutines.runBlocking {
+                kotlinx.coroutines.withTimeoutOrNull(3000L) { flush() }
+            }
+        }
     }
 
     private fun subscribeFused() {
@@ -147,18 +233,19 @@ class TrackingService : LifecycleService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
         // Перезапуск системы без разрешений (фон) — не липнем, чтобы не крутить краш-цикл.
+        // Пауза переключается только из Настроек (trust-v2 4.1): внешних
+        // action здесь больше нет, intent игнорируется.
         if (!TrackingPreconditions.playServicesAvailable(this) || !canTrack(this)) {
             stopSelf()
             return START_NOT_STICKY
         }
-        if (intent?.action == ACTION_TOGGLE_PAUSE) {
-            lifecycleScope.launch {
-                val container = (application as FogMapApp).container
-                val cur = container.dataStore.data.first()[PrefsKeys.PAUSED] ?: false
-                container.settingsRepository.setPaused(!cur)
-            }
-        }
         return START_STICKY
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // Свайп из недавних: система сейчас убьет процесс — сбрасываем пачку.
+        flushBlocking()
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
@@ -166,11 +253,13 @@ class TrackingService : LifecycleService() {
             LocationServices.getFusedLocationProviderClient(this)
                 .removeLocationUpdates(callback)
         }
+        flushBlocking()
         flushJob?.cancel()
         super.onDestroy()
     }
 
-    // --- Уведомление «пишет трек» с действием паузы ---
+    // --- Статусное уведомление «пишет трек» (trust-v2 4.1: без действий,
+    // пауза только из Настроек) ---
 
     private fun ensureChannel() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -184,21 +273,14 @@ class TrackingService : LifecycleService() {
             this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        val toggle = PendingIntent.getService(
-            this, 1,
-            Intent(this, TrackingService::class.java).setAction(ACTION_TOGGLE_PAUSE),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
         return NotificationCompat.Builder(this, CHANNEL)
             .setContentTitle(if (paused) "FogMap на паузе" else "FogMap пишет трек")
-            .setContentText(if (paused) "Нажмите, чтобы продолжить запись" else "Туман открывается")
+            .setContentText(
+                if (paused) "Продолжите запись в Настройки — Запись" else "Туман открывается"
+            )
             .setSmallIcon(R.drawable.ic_stat_fog)
             .setContentIntent(openApp)
             .setOngoing(true)
-            .addAction(
-                android.R.drawable.ic_media_pause,
-                if (paused) "Продолжить" else "Пауза", toggle
-            )
             .build()
     }
 
@@ -218,7 +300,11 @@ class TrackingService : LifecycleService() {
     companion object {
         const val CHANNEL = "tracking"
         const val NOTIF_ID = 41
-        const val ACTION_TOGGLE_PAUSE = "ru.fogmap.TOGGLE_PAUSE"
+        /** Flush-интервал (tracking-reliability 2.1): потери при убийстве — не больше него. */
+        const val FLUSH_INTERVAL_MS = 15_000L
+        const val FLUSH_SIZE = 20
+        /** Тишина Fused дольше порога = интервал no-fix (tracking-reliability 3.1). */
+        const val NO_FIX_GAP_MS = 5 * 60_000L
 
         /** Трекинг разрешен, только когда есть гео-разрешение (spec: «когда разрешено»). */
         fun canTrack(context: Context): Boolean =

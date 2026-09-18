@@ -25,20 +25,20 @@ class FogGridTest {
     @Test
     fun `граничные точки рядом дают соседние ячейки`() {
         val center = FogGrid.cellFor(55.7558, 37.6173)
-        val east = FogGrid.cellFor(55.7558, 37.6195) // ~140 м восточнее
+        val east = FogGrid.cellFor(55.7558, 37.61755) // ~15 м восточнее
         val dx = east.x - center.x
         assertTrue(dx in 0..2)
     }
 
     @Test
     fun `пороги радиуса по скорости`() {
-        assertEquals(50.0, FogGrid.radiusForSpeed(null), 0.0)
-        assertEquals(50.0, FogGrid.radiusForSpeed(0f), 0.0)
-        assertEquals(50.0, FogGrid.radiusForSpeed(2.77f), 0.0)
-        assertEquals(200.0, FogGrid.radiusForSpeed(2.78f), 0.0)
-        assertEquals(200.0, FogGrid.radiusForSpeed(10f), 0.0)
-        assertEquals(500.0, FogGrid.radiusForSpeed(13.9f), 0.0)
-        assertEquals(500.0, FogGrid.radiusForSpeed(30f), 0.0)
+        assertEquals(15.0, FogGrid.radiusForSpeed(null), 0.0)
+        assertEquals(15.0, FogGrid.radiusForSpeed(0f), 0.0)
+        assertEquals(15.0, FogGrid.radiusForSpeed(2.77f), 0.0)
+        assertEquals(60.0, FogGrid.radiusForSpeed(2.78f), 0.0)
+        assertEquals(60.0, FogGrid.radiusForSpeed(10f), 0.0)
+        assertEquals(100.0, FogGrid.radiusForSpeed(13.9f), 0.0)
+        assertEquals(100.0, FogGrid.radiusForSpeed(30f), 0.0)
     }
 
     @Test
@@ -50,8 +50,31 @@ class FogGridTest {
     }
 
     @Test
-    fun `площадь — ячейки на 0 целых 01`() {
-        assertEquals(1.5, FogGrid.areaKm2(150), 1e-9)
+    fun `низкое доверие — туман не открывается`() {
+        assertTrue(FogGrid.cellsForTrust(55.7558, 37.6173, 20f, 10, 8f).isEmpty())
+        assertEquals(null, FogGrid.brushRadius(20f, 10, 8f))
+    }
+
+    @Test
+    fun `среднее доверие и плохой accuracy — минимум`() {
+        // 20 м/с просит 100м, но MID и accuracy 20 режут до пеших 15м.
+        assertEquals(15.0, FogGrid.brushRadius(20f, 50, 8f)!!, 0.0)
+        assertEquals(15.0, FogGrid.brushRadius(20f, 90, 20f)!!, 0.0)
+        val mid = FogGrid.cellsForTrust(55.7558, 37.6173, 20f, 50, 8f)
+        val walk = FogGrid.cellsAround(55.7558, 37.6173, 1f)
+        assertEquals(walk, mid)
+    }
+
+    @Test
+    fun `высокое доверие — полная кисть по скорости`() {
+        assertEquals(100.0, FogGrid.brushRadius(20f, 90, 8f)!!, 0.0)
+        val full = FogGrid.cellsForTrust(55.7558, 37.6173, 20f, 90, 8f)
+        assertEquals(FogGrid.cellsAround(55.7558, 37.6173, 20f), full)
+    }
+
+    @Test
+    fun `площадь — базовые эквиваленты на номинал клетки`() {
+        assertEquals(150 * FogGrid.AREA_PER_BASE_CELL_KM2, FogGrid.areaKm2(150), 1e-12)
         assertEquals(0.0, FogGrid.areaKm2(0), 0.0)
     }
 }

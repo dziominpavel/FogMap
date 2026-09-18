@@ -3,9 +3,9 @@ package ru.fogmap.map
 import ru.fogmap.fog.FogGrid
 
 /**
- * Чистая геометрия слоя тумана (задача 4.1): склейка соседних клеток
- * в прямоугольники + LRU-кэш склеенных геометрий. Без зависимости от MapKit —
- * покрывается unit-тестами, тонкий адаптер — в [FogLayer].
+ * Чистая геометрия слоя тумана: склейка соседних клеток
+ * в прямоугольники. Без зависимости от MapKit —
+ * покрывается unit-тестами, потребители — маска ([FogMask]).
  */
 object FogRects {
     data class Rect(val x0: Int, val x1: Int, val y0: Int, val y1: Int)
@@ -47,16 +47,4 @@ object FogRects {
         out.add(s to p)
         return out
     }
-}
-
-/** LRU-кэш склеенных геометрий viewport (до 32 записей). */
-class RectCache(private val maxSize: Int = 32) {
-    private val map = object : LinkedHashMap<String, List<FogRects.Rect>>(maxSize, 0.75f, true) {
-        override fun removeEldestEntry(e: MutableMap.MutableEntry<String, List<FogRects.Rect>>?) =
-            size > maxSize
-    }
-
-    @Synchronized
-    fun getOrPut(key: String, build: () -> List<FogRects.Rect>): List<FogRects.Rect> =
-        map.getOrPut(key, build)
 }

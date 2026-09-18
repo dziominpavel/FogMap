@@ -1,6 +1,5 @@
 package ru.fogmap.ui.screens
 
-import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -17,6 +16,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -29,10 +29,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.core.net.toUri
 import androidx.datastore.preferences.core.preferencesOf
 import androidx.navigation.NavController
 import kotlinx.coroutines.launch
+import ru.fogmap.BuildConfig
 import ru.fogmap.FogMapApp
 import ru.fogmap.data.ThemeModes
 import ru.fogmap.ui.BottomBar
@@ -47,6 +47,7 @@ fun SettingsScreen(nav: NavController) {
     var done by remember { mutableStateOf(false) }
     val prefs by app.container.dataStore.data.collectAsState(initial = preferencesOf())
     val themeMode = prefs[ru.fogmap.data.PrefsKeys.THEME_MODE] ?: ThemeModes.DEFAULT
+    val paused = prefs[ru.fogmap.data.PrefsKeys.PAUSED] ?: false
     val version = remember {
         runCatching {
             @Suppress("DEPRECATION")
@@ -86,6 +87,30 @@ fun SettingsScreen(nav: NavController) {
                     }
                 }
             }
+            // --- Запись (trust-v2 4.1: единственное место паузы) ---
+            Text("Запись", style = MaterialTheme.typography.titleMedium)
+            Card(Modifier.fillMaxWidth()) {
+                androidx.compose.foundation.layout.Row(
+                    Modifier.fillMaxWidth().padding(16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Пауза «не писать»", style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            if (paused) "Запись остановлена"
+                            else "Трекинг идет всегда, когда разрешен",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                    Switch(
+                        checked = paused,
+                        onCheckedChange = { v ->
+                            scope.launch { app.container.settingsRepository.setPaused(v) }
+                        }
+                    )
+                }
+            }
             // --- Данные / опасная зона ---
             Text("Данные", style = MaterialTheme.typography.titleMedium)
             Card(Modifier.fillMaxWidth()) {
@@ -113,18 +138,13 @@ fun SettingsScreen(nav: NavController) {
                 Column(Modifier.padding(16.dp)) {
                     Text("FogMap $version", style = MaterialTheme.typography.bodyLarge)
                     Text(
+                        "Сборка: ${BuildConfig.BUILD_TIME}",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
                         "Трекер тумана войны. Все данные хранятся только на телефоне.",
                         style = MaterialTheme.typography.bodyMedium
                     )
-                    Spacer(Modifier.height(8.dp))
-                    TextButton(onClick = {
-                        context.startActivity(
-                            Intent(
-                                Intent.ACTION_VIEW,
-                                "https://yandex.ru/legal/maps_termsofuse/".toUri()
-                            )
-                        )
-                    }) { Text("Условия Яндекс Карт") }
                 }
             }
         }

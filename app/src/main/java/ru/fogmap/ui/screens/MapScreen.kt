@@ -2,6 +2,8 @@ package ru.fogmap.ui.screens
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.util.Log
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -17,27 +19,30 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MyLocation
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -46,6 +51,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.navigation.NavController
 import com.yandex.mapkit.Animation
 import com.yandex.mapkit.geometry.Point
+import com.yandex.mapkit.map.CameraListener
 import com.yandex.mapkit.map.CameraPosition
 import com.yandex.mapkit.mapview.MapView
 import com.google.android.gms.location.LocationServices
@@ -55,18 +61,22 @@ import ru.fogmap.FogMapApp
 import ru.fogmap.R
 import ru.fogmap.data.PrefsKeys
 import ru.fogmap.data.ThemeModes
-import ru.fogmap.map.FogLayer
+import ru.fogmap.fog.FogGrid.Cell
+import ru.fogmap.map.FogMask
+import ru.fogmap.map.FogMask.HolePx
+import ru.fogmap.map.FogMaskOverlay
 import ru.fogmap.tracking.TrackingPreconditions
 import ru.fogmap.tracking.TrackingService
 import ru.fogmap.ui.BottomBar
 import ru.fogmap.ui.theme.isDarkTheme
+import kotlin.math.abs
 
 /**
- * Карта — главный экран (spec app-shell/map-render).
- * Туман — полигонами MapKit ([FogLayer]), логотип/копирайты SDK не перекрываем
- * (полноэкранные оверлеи запрещены). Без Play Services — заглушка.
- * Управление одной рукой: FAB-стек справа внизу + статус-чип сессии слева
- * (ui-dark-redesign 2.2, отступ снизу — не перекрывать логотип Яндекса).
+ * Карта — главный экран (spec app-shell/map-render, fog-mask-canvas).
+ * Туман — маской Canvas поверх MapView ([FogMaskOverlay]): глухая вуаль
+ * первым кадром + мягкие дырки (fail-closed, рамок нет). Клетки живут
+ * в памяти (прелоад + Flow), на сдвиг камеры запросов в БД нет.
+ * Tilt зафиксирован в 0, чип зума и компас — справа над FAB.
  */
 @Composable
 fun MapScreen(nav: NavController) {
@@ -77,15 +87,14 @@ fun MapScreen(nav: NavController) {
         .collectAsState(initial = androidx.datastore.preferences.core.preferencesOf())
     val isPaused = paused[PrefsKeys.PAUSED] ?: false
     val hasPlay = remember { TrackingPreconditions.playServicesAvailable(context) }
-    // Ночная карта синхронно с темой оболочки (4.2): темная → night,
-    // светлая → day, system → за системой. Fallback — FogLayer.FORCE_DAY_MAP.
+    // Ночная карта синхронно с темой оболочки: темная → night,
+    // светлая → day, system → за системой. Fallback — FogMask.FORCE_DAY_MAP.
     val darkTheme = isDarkTheme(
         paused[PrefsKeys.THEME_MODE] ?: ThemeModes.DEFAULT,
         isSystemInDarkTheme()
     )
-    val useNightMap = darkTheme && !FogLayer.FORCE_DAY_MAP
-    val fogFill = if (darkTheme) FogLayer.FOG_FILL_DARK else FogLayer.FOG_FILL_LIGHT
-    val fogBorder = if (darkTheme) FogLayer.FOG_BORDER_DARK else FogLayer.FOG_BORDER_LIGHT
+    val useNightMap = darkTheme && !FogMask.FORCE_DAY_MAP
+    val veilColor = Color(if (darkTheme) FogMask.VEIL_DARK else FogMask.VEIL_LIGHT)
 
     Scaffold(bottomBar = { BottomBar(nav, "map") }) { pad ->
         if (!hasPlay) {
@@ -142,9 +151,32 @@ fun MapScreen(nav: NavController) {
                 mapWindow.map.move(CameraPosition(Point(55.7558, 37.6173), 14f, 0f, 0f))
             }
         }
+        // Состояние камеры для маски/чипа/компаса (fog-mask-canvas 4.2–4.3).
+        // Target — парой (у Point нет equals, remember бы пересчитывал всегда).
+        var camZoom by remember { mutableStateOf(14f) }
+        var camAzimuth by remember { mutableStateOf(0f) }
+        var camTarget by remember { mutableStateOf(55.7558 to 37.6173) }
+        // Туман в памяти: прелоад + живые инкременты (2.1–2.2).
+        var cells by remember { mutableStateOf(emptySet<Cell>()) }
+        LaunchedEffect(mapView) {
+            launch {
+                val all = runCatching { app.container.fogRepository.allCells() }
+                    .getOrDefault(emptySet())
+                cells = all
+                val count = runCatching { app.container.fogRepository.cellCount() }
+                    .getOrDefault(-1L)
+                Log.d("FogMask", "preload cells=${all.size} dbCount=$count")
+            }
+            launch {
+                runCatching {
+                    app.container.fogRepository.observeCells().collect { cells = it }
+                }
+            }
+        }
         // Камера на текущую геолокацию: стартовая (чтобы не открываться в Москве)
         // и кнопка «Где я». Всё через runCatching: microG может вернуть null.
         // Вызывать только с UI-потока (MapKit роняет процесс из фона).
+        // Tilt всегда 0 (fog-mask-canvas 4.1): вид строго сверху.
         fun moveToMyLocation(zoom: Float) {
             runCatching {
                 val client = LocationServices.getFusedLocationProviderClient(context)
@@ -177,14 +209,37 @@ fun MapScreen(nav: NavController) {
                 }
             }
         }
-        DisposableEffect(lifecycle, mapView, useNightMap, fogFill, fogBorder) {
+        // Слушатель камеры: зум/азимут для маски и UI + возврат tilt в 0.
+        // MapKit 4.42.0 принимает слушателя как WeakReference (как раньше FogLayer).
+        val camListener = remember {
+            var snappingTilt = false
+            CameraListener { map, pos, _, _ ->
+                camZoom = pos.zoom
+                camAzimuth = pos.azimuth
+                camTarget = pos.target.latitude to pos.target.longitude
+                if (pos.tilt > 1f && !snappingTilt) {
+                    snappingTilt = true
+                    runCatching {
+                        map.move(
+                            CameraPosition(pos.target, pos.zoom, pos.azimuth, 0f),
+                            Animation(Animation.Type.SMOOTH, 0.3f), null
+                        )
+                    }
+                    snappingTilt = false
+                }
+            }
+        }
+        val camListenerRef = remember(camListener) {
+            java.lang.ref.WeakReference(camListener)
+        }
+        DisposableEffect(lifecycle, mapView, useNightMap) {
             // Ночной режим — только при смене темы, не при каждой рекомпозиции.
             runCatching { mapView.mapWindow.map.setNightModeEnabled(useNightMap) }
-            val fog = FogLayer(mapView, app.container.fogRepository, scope, fogFill, fogBorder)
+            runCatching { mapView.mapWindow.map.addCameraListener(camListenerRef) }
             val observer = LifecycleEventObserver { _, event ->
                 when (event) {
-                    Lifecycle.Event.ON_START -> { mapView.onStart(); fog.start() }
-                    Lifecycle.Event.ON_STOP -> { fog.stop(); mapView.onStop() }
+                    Lifecycle.Event.ON_START -> { mapView.onStart() }
+                    Lifecycle.Event.ON_STOP -> { mapView.onStop() }
                     else -> Unit
                 }
             }
@@ -193,11 +248,67 @@ fun MapScreen(nav: NavController) {
             moveToMyLocation(15f)
             onDispose {
                 lifecycle.removeObserver(observer)
-                runCatching { fog.stop() }
+                runCatching { mapView.mapWindow.map.removeCameraListener(camListenerRef) }
             }
         }
+        // Дырки в пикселях: из памяти, проекция worldToScreen в UI-потоке.
+        // Ключи — клетки + зум + азимут + target: иначе при пане одним пальцем
+        // (зум тот же) дырки стоят, а карта едет под ними.
+        // worldToScreen может вернуть null (точка за камерой) — тогда дырки
+        // нет (fail-closed). Лог — след спайка 1.1–1.2.
+        val holesPx: List<HolePx> = remember(cells, camZoom, camAzimuth, camTarget) {
+            val t0 = System.nanoTime()
+            val region = runCatching {
+                val r = mapView.mapWindow.map.visibleRegion
+                val topLat = maxOf(r.topLeft.latitude, r.topRight.latitude)
+                val bottomLat = minOf(r.bottomLeft.latitude, r.bottomRight.latitude)
+                val leftLon = minOf(r.topLeft.longitude, r.bottomLeft.longitude)
+                val rightLon = maxOf(r.topRight.longitude, r.bottomRight.longitude)
+                val dLat = (topLat - bottomLat) * 0.25
+                val dLon = (rightLon - leftLon) * 0.25
+                FogMask.RegionBox(topLat + dLat, bottomLat - dLat, leftLon - dLon, rightLon + dLon)
+            }.getOrNull()
+            val holes = FogMask.holesForZoom(cells, camZoom, region)
+            val out = ArrayList<HolePx>(holes.size.coerceAtMost(FogMask.MAX_HOLES))
+            var nullProj = 0
+            if (!FogMask.overBudget(holes)) {
+                val win = mapView.mapWindow
+                for (h in holes) {
+                    val (tl, br) = FogMask.holeBounds(h)
+                    val s1 = runCatching { win.worldToScreen(Point(tl.first, tl.second)) }.getOrNull()
+                    val s2 = runCatching { win.worldToScreen(Point(br.first, br.second)) }.getOrNull()
+                    if (s1 == null || s2 == null) {
+                        nullProj++
+                        continue
+                    }
+                    out.add(
+                        FogMask.ensureMinPx(
+                            HolePx(
+                                minOf(s1.x, s2.x), minOf(s1.y, s2.y),
+                                maxOf(s1.x, s2.x), maxOf(s1.y, s2.y)
+                            )
+                        )
+                    )
+                }
+            }
+            Log.d(
+                "FogMask",
+                "zoom=$camZoom cells=${cells.size} holes=${out.size} " +
+                    "nullProj=$nullProj dtMs=${"%.1f".format((System.nanoTime() - t0) / 1e6)}"
+            )
+            out
+        }
+        // Компас виден при отклонении от севера > 10° (azimuth 0..360).
+        val northOff = minOf(camAzimuth, 360f - camAzimuth).let { abs(it) }
+        val showCompass = northOff > 10f
         Box(Modifier.fillMaxSize().padding(pad)) {
             AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
+            // Маска поверх карты (личная сборка: MAY перекрывать логотип).
+            FogMaskOverlay(
+                holes = holesPx,
+                veilColor = veilColor,
+                modifier = Modifier.fillMaxSize()
+            )
             // Статус-чип сессии: read-only, слева внизу над логотипом SDK.
             Surface(
                 shape = MaterialTheme.shapes.small,
@@ -217,20 +328,62 @@ fun MapScreen(nav: NavController) {
                     )
                 }
             }
-            // FAB-стек: пауза + «Где я», одна рука.
+            // Правая колонка: компас + зум + «Где я» (4.2–4.3).
             Column(
                 Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 64.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                SmallFloatingActionButton(
-                    onClick = {
-                        scope.launch { app.container.settingsRepository.setPaused(!isPaused) }
+                if (showCompass) {
+                    FloatingActionButton(
+                        onClick = {
+                            runCatching {
+                                val pos = mapView.mapWindow.map.cameraPosition
+                                mapView.mapWindow.map.move(
+                                    CameraPosition(pos.target, pos.zoom, 0f, 0f),
+                                    Animation(Animation.Type.SMOOTH, 0.5f), null
+                                )
+                            }
+                        }
+                    ) {
+                        // Стрелка-компас в стиле Яндекс Карт: красная северная
+                        // половина, серая южная, поворот за картой.
+                        Canvas(Modifier.size(24.dp)) {
+                            rotate(-camAzimuth) {
+                                val c = center
+                                val r = size.minDimension / 2f
+                                val w = r * 0.38f
+                                drawPath(
+                                    Path().apply {
+                                        moveTo(c.x, c.y - r)
+                                        lineTo(c.x + w, c.y)
+                                        lineTo(c.x - w, c.y)
+                                        close()
+                                    },
+                                    Color(0xFFE53935)
+                                )
+                                drawPath(
+                                    Path().apply {
+                                        moveTo(c.x, c.y + r)
+                                        lineTo(c.x + w, c.y)
+                                        lineTo(c.x - w, c.y)
+                                        close()
+                                    },
+                                    Color(0xFFB0BEC5)
+                                )
+                                drawCircle(Color.White, radius = r * 0.14f, center = c)
+                            }
+                        }
                     }
+                }
+                Surface(
+                    shape = MaterialTheme.shapes.small,
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)
                 ) {
-                    Icon(
-                        if (isPaused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
-                        contentDescription = if (isPaused) "Продолжить запись" else "Пауза"
+                    Text(
+                        "%.1f".format(camZoom),
+                        style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                     )
                 }
                 FloatingActionButton(onClick = { moveToMyLocation(16f) }) {

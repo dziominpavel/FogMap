@@ -1,3 +1,5 @@
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 import java.util.Properties
 
 plugins {
@@ -14,6 +16,9 @@ if (localPropertiesFile.exists()) {
 }
 val mapkitApiKey: String =
     (System.getenv("MAPKIT_API_KEY") ?: localProps.getProperty("MAPKIT_API_KEY") ?: "YOUR_API_KEY")
+// Метка сборки для экрана «О программе» (видно когда собрано).
+val buildTime: String =
+    LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
 // ABI для упаковки APK: задает build-apk.bat через -PtargetAbis (напр. "arm64-v8a,armeabi-v7a").
 // Без свойства — все ABI из зависимостей (нужно для debug на эмуляторе x86_64).
 // Это НЕ вырезание кода из проекта: MapKit остается целиком, выбирается лишь что класть в APK.
@@ -35,13 +40,14 @@ android {
         applicationId = "ru.fogmap"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0-mvp"
+        versionCode = 2
+        versionName = "0.2.0-mvp"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
 
         buildConfigField("String", "MAPKIT_API_KEY", "\"$mapkitApiKey\"")
+        buildConfigField("String", "BUILD_TIME", "\"$buildTime\"")
     }
 
     if (hasReleaseKeystore) {

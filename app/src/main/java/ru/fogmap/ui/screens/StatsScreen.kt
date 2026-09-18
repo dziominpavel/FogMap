@@ -100,7 +100,7 @@ private fun StatsContent(s: Stats) {
                 "Дистанция" to "%.1f км".format(s.distanceM / 1000),
                 "Треки" to "${s.tracks}",
                 "Время в пути" to "${s.timeS / 60} мин"
-            )
+            ) + if (s.rejected > 0) listOf("Отброшено точек" to "${s.rejected}") else emptyList()
         ) { (label, value) ->
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
