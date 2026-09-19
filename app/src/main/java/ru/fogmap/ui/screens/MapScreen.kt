@@ -2,7 +2,7 @@ package ru.fogmap.ui.screens
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.util.Log
+import android.os.SystemClock
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -61,6 +61,10 @@ import ru.fogmap.FogMapApp
 import ru.fogmap.R
 import ru.fogmap.data.PrefsKeys
 import ru.fogmap.data.ThemeModes
+import ru.fogmap.diag.DevCameraStats
+import ru.fogmap.diag.DevLog
+import ru.fogmap.diag.DevPerfMonitor
+import ru.fogmap.diag.DevRenderStats
 import ru.fogmap.fog.FogGrid.Cell
 import ru.fogmap.map.FogMask
 import ru.fogmap.map.FogMask.HolePx
@@ -148,7 +152,13 @@ fun MapScreen(nav: NavController) {
         val lifecycle = LocalLifecycleOwner.current.lifecycle
         val mapView = remember {
             MapView(context).apply {
+                // no-tilt-plus-diag: жест наклона запрещен в источнике (вид строго
+                // сверху, tilt всегда 0) — иначе двухпальцевый свайп уводит камеру
+                // в tilt ~50 и запускает петлю корректирующих move().
+                mapWindow.map.isTiltGesturesEnabled = false
                 mapWindow.map.move(CameraPosition(Point(55.7558, 37.6173), 14f, 0f, 0f))
+                // ВРЕМЕННОЕ (dev-logging): исходящее программное движение.
+                runCatching { DevCameraStats.onMove() }
             }
         }
         // Состояние камеры для маски/чипа/компаса (fog-mask-canvas 4.2–4.3).
@@ -165,7 +175,8 @@ fun MapScreen(nav: NavController) {
                 cells = all
                 val count = runCatching { app.container.fogRepository.cellCount() }
                     .getOrDefault(-1L)
-                Log.d("FogMask", "preload cells=${all.size} dbCount=$count")
+                // ВРЕМЕННОЕ (dev-logging): прелоад — редкое событие, не кадр.
+                DevLog.i("RENDER", "preload", mapOf("cells" to all.size, "db_count" to count))
             }
             launch {
                 runCatching {
@@ -173,6 +184,8 @@ fun MapScreen(nav: NavController) {
                 }
             }
         }
+        // ВРЕМЕННОЕ (dev-logging): число клеток для PERF-агрегата.
+        LaunchedEffect(cells.size) { DevPerfMonitor.setCells(cells.size) }
         // Камера на текущую геолокацию: стартовая (чтобы не открываться в Москве)
         // и кнопка «Где я». Всё через runCatching: microG может вернуть null.
         // Вызывать только с UI-потока (MapKit роняет процесс из фона).
@@ -187,6 +200,8 @@ fun MapScreen(nav: NavController) {
                                 CameraPosition(Point(loc.latitude, loc.longitude), zoom, 0f, 0f),
                                 Animation(Animation.Type.SMOOTH, 0.8f), null
                             )
+                            // ВРЕМЕННОЕ (dev-logging): исходящее программное движение.
+                            runCatching { DevCameraStats.onMove() }
                         }
                     } else {
                         runCatching {
@@ -201,6 +216,8 @@ fun MapScreen(nav: NavController) {
                                                 ),
                                                 Animation(Animation.Type.SMOOTH, 0.8f), null
                                             )
+                                            // ВРЕМЕННОЕ (dev-logging): исходящее программное движение.
+                                            runCatching { DevCameraStats.onMove() }
                                         }
                                     }
                                 }
@@ -209,23 +226,23 @@ fun MapScreen(nav: NavController) {
                 }
             }
         }
-        // Слушатель камеры: зум/азимут для маски и UI + возврат tilt в 0.
+        // Слушатель камеры: зум/азимут/target для маски и UI.
+        // Tilt-жест отключен в SDK (см. создание mapView выше), поэтому
+        // корректирующего возврата нет: слушатель никогда не запускает
+        // move() — это и была самоподдерживающаяся петля (no-tilt-plus-diag).
         // MapKit 4.42.0 принимает слушателя как WeakReference (как раньше FogLayer).
         val camListener = remember {
-            var snappingTilt = false
-            CameraListener { map, pos, _, _ ->
+            CameraListener { _, pos, _, _ ->
                 camZoom = pos.zoom
                 camAzimuth = pos.azimuth
                 camTarget = pos.target.latitude to pos.target.longitude
-                if (pos.tilt > 1f && !snappingTilt) {
-                    snappingTilt = true
-                    runCatching {
-                        map.move(
-                            CameraPosition(pos.target, pos.zoom, pos.azimuth, 0f),
-                            Animation(Animation.Type.SMOOTH, 0.3f), null
-                        )
-                    }
-                    snappingTilt = false
+                // ВРЕМЕННОЕ (dev-logging): только примитивы, ноль строк в колбэке.
+                // tiltFixed=false: корректирующих движений больше нет.
+                runCatching {
+                    DevCameraStats.onEvent(
+                        pos.zoom, pos.azimuth, pos.tilt, false,
+                        SystemClock.elapsedRealtime()
+                    )
                 }
             }
         }
@@ -236,10 +253,19 @@ fun MapScreen(nav: NavController) {
             // Ночной режим — только при смене темы, не при каждой рекомпозиции.
             runCatching { mapView.mapWindow.map.setNightModeEnabled(useNightMap) }
             runCatching { mapView.mapWindow.map.addCameraListener(camListenerRef) }
+            // ВРЕМЕННОЕ (dev-logging): жизненный цикл + PERF-монитор.
+            DevLog.d("UI", "map_lifecycle", mapOf("event" to "ON_START"))
+            DevPerfMonitor.start(context)
             val observer = LifecycleEventObserver { _, event ->
                 when (event) {
-                    Lifecycle.Event.ON_START -> { mapView.onStart() }
-                    Lifecycle.Event.ON_STOP -> { mapView.onStop() }
+                    Lifecycle.Event.ON_START -> {
+                        mapView.onStart()
+                        DevLog.d("UI", "mapview", mapOf("event" to "ON_START"))
+                    }
+                    Lifecycle.Event.ON_STOP -> {
+                        mapView.onStop()
+                        DevLog.d("UI", "mapview", mapOf("event" to "ON_STOP"))
+                    }
                     else -> Unit
                 }
             }
@@ -248,6 +274,8 @@ fun MapScreen(nav: NavController) {
             moveToMyLocation(15f)
             onDispose {
                 lifecycle.removeObserver(observer)
+                DevLog.d("UI", "map_lifecycle", mapOf("event" to "ON_STOP"))
+                DevPerfMonitor.stop()
                 runCatching { mapView.mapWindow.map.removeCameraListener(camListenerRef) }
             }
         }
@@ -257,6 +285,7 @@ fun MapScreen(nav: NavController) {
         // worldToScreen может вернуть null (точка за камерой) — тогда дырки
         // нет (fail-closed). Лог — след спайка 1.1–1.2.
         val holesPx: List<HolePx> = remember(cells, camZoom, camAzimuth, camTarget) {
+            // ВРЕМЕННОЕ (dev-logging): замеры merge vs проекция, агрегат вместо спама.
             val t0 = System.nanoTime()
             val region = runCatching {
                 val r = mapView.mapWindow.map.visibleRegion
@@ -269,9 +298,11 @@ fun MapScreen(nav: NavController) {
                 FogMask.RegionBox(topLat + dLat, bottomLat - dLat, leftLon - dLon, rightLon + dLon)
             }.getOrNull()
             val holes = FogMask.holesForZoom(cells, camZoom, region)
+            val tMerge = System.nanoTime()
             val out = ArrayList<HolePx>(holes.size.coerceAtMost(FogMask.MAX_HOLES))
             var nullProj = 0
-            if (!FogMask.overBudget(holes)) {
+            val isOverBudget = FogMask.overBudget(holes)
+            if (!isOverBudget) {
                 val win = mapView.mapWindow
                 for (h in holes) {
                     val (tl, br) = FogMask.holeBounds(h)
@@ -291,11 +322,21 @@ fun MapScreen(nav: NavController) {
                     )
                 }
             }
-            Log.d(
-                "FogMask",
-                "zoom=$camZoom cells=${cells.size} holes=${out.size} " +
-                    "nullProj=$nullProj dtMs=${"%.1f".format((System.nanoTime() - t0) / 1e6)}"
-            )
+            // ВРЕМЕННОЕ (dev-logging): агрегат 2 сек + W при кадре > 500мс/overBudget.
+            // Покадровый Log.d удален (2.3): при пане был шторм строк с format().
+            val t1 = System.nanoTime()
+            runCatching {
+                DevRenderStats.onFrame(
+                    dtMergeMs = (tMerge - t0) / 1e6,
+                    dtProjMs = (t1 - tMerge) / 1e6,
+                    dtTotalMs = (t1 - t0) / 1e6,
+                    cells = cells.size,
+                    holes = out.size,
+                    nullProj = nullProj,
+                    overBudget = isOverBudget,
+                    nowMono = SystemClock.elapsedRealtime()
+                )
+            }
             out
         }
         // Компас виден при отклонении от севера > 10° (azimuth 0..360).
@@ -337,12 +378,16 @@ fun MapScreen(nav: NavController) {
                 if (showCompass) {
                     FloatingActionButton(
                         onClick = {
+                            // ВРЕМЕННОЕ (dev-logging): нажатие компаса.
+                            DevLog.d("UI", "tap", mapOf("target" to "compass_reset"))
                             runCatching {
                                 val pos = mapView.mapWindow.map.cameraPosition
                                 mapView.mapWindow.map.move(
                                     CameraPosition(pos.target, pos.zoom, 0f, 0f),
                                     Animation(Animation.Type.SMOOTH, 0.5f), null
                                 )
+                                // ВРЕМЕННОЕ (dev-logging): исходящее программное движение.
+                                runCatching { DevCameraStats.onMove() }
                             }
                         }
                     ) {
@@ -386,7 +431,11 @@ fun MapScreen(nav: NavController) {
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                     )
                 }
-                FloatingActionButton(onClick = { moveToMyLocation(16f) }) {
+                FloatingActionButton(onClick = {
+                    // ВРЕМЕННОЕ (dev-logging): нажатие «Где я».
+                    DevLog.d("UI", "tap", mapOf("target" to "my_location"))
+                    moveToMyLocation(16f)
+                }) {
                     Icon(Icons.Filled.MyLocation, contentDescription = "Где я")
                 }
             }

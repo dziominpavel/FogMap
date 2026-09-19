@@ -11,6 +11,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.yandex.mapkit.MapKitFactory
 import ru.fogmap.data.ThemeModes
+import ru.fogmap.ui.screens.DiagDiagnosticsScreen
 import ru.fogmap.ui.screens.HistoryDetailScreen
 import ru.fogmap.ui.screens.HistoryScreen
 import ru.fogmap.ui.screens.MapScreen
@@ -56,5 +57,7 @@ fun FogMapNav() {
         }
         composable("settings") { SettingsScreen(nav) }
         composable("onboarding") { OnboardingScreen(nav) }
+        // ВРЕМЕННОЕ (dev-logging): экран диагностики, удалить вместе с change.
+        composable("diagnostics") { DiagDiagnosticsScreen(nav) }
     }
 }

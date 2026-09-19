@@ -25,12 +25,14 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import java.util.Locale
 import ru.fogmap.FogMapApp
 import ru.fogmap.MainActivity
 import ru.fogmap.R
 import ru.fogmap.data.FogRepository
 import ru.fogmap.data.PrefsKeys
 import ru.fogmap.data.RawPoint
+import ru.fogmap.diag.DevLog
 
 /**
  * Фоновый трекинг (spec tracking, задачи 3.1–3.3):
@@ -77,6 +79,8 @@ class TrackingService : LifecycleService() {
             stopSelf()
             return
         }
+        // ВРЕМЕННОЕ (dev-logging): старт сервиса.
+        DevLog.i("TRACK", "service_start")
         lifecycleScope.launch {
             val container = (application as FogMapApp).container
             // Подписка на паузу: при включенной паузе точки не пишем.
@@ -89,9 +93,13 @@ class TrackingService : LifecycleService() {
                     updateNotification(paused)
                 }
             }
-            // Старт суток-чанка и Fused-подписка (предусловия уже проверены выше).
-            trackId = container.trackRepository.startDayChunk()
+            // День-атом (day-track-history D1/D5): переоткрываем строку даты,
+            // а не плодим обломок на каждый старт. Пустой день материализуется
+            // строкой с нулями даже до первой движущейся точки.
+            trackId = container.trackRepository.openDayChunk()
             chunkDate = java.time.LocalDate.now()
+            // ВРЕМЕННОЕ (dev-logging): чанк старта (только id, без координат).
+            DevLog.i("TRACK", "day_chunk", mapOf("track_id" to trackId))
             subscribeFused()
             flushJob = launch {
                 while (true) {
@@ -119,7 +127,8 @@ class TrackingService : LifecycleService() {
             return
         }
         // Доверие по последовательности (gps-trust-filter): вердикт считается
-        // синхронно в колбэке, история — только записанные точки.
+        // синхронно в колбэке; история в памяти — все принятые точки (включая
+        // дропнутую STAND-статику, иначе холодный старт не выйдет из STAND).
         val hp = TrustEngine.HistPoint(
             time = loc.time, lat = loc.latitude, lon = loc.longitude, acc = loc.accuracy
         )
@@ -134,6 +143,16 @@ class TrackingService : LifecycleService() {
             verdict.countReject?.let { key ->
                 rejected[key] = (rejected[key] ?: 0) + 1
             }
+            trustHistory.addLast(hp)
+            while (trustHistory.size > TrustEngine.HISTORY_MAX) trustHistory.removeFirst()
+            // День-атом (day-track-history D2): статика (STAND — стою, открывать
+            // нечего) в БД не пишется вообще: ни точки, ни rejected. Движок
+            // доверия при этом шагает как раньше (история в памяти нужна,
+            // иначе холодный старт никогда не выйдет из STAND); прыжки
+            // (SUSPECT/jump) и движение пишутся как раньше.
+            if (verdict.state == TrustEngine.State.STAND) {
+                return
+            }
             // Раздельные ворота (spec tracking): точка пишется всегда
             // с полным вердиктом, туман — только подтвержденным (ворота C).
             buffer.add(
@@ -144,13 +163,22 @@ class TrackingService : LifecycleService() {
                     state = verdict.state.name, rejectReason = verdict.countReject
                 )
             )
-            trustHistory.addLast(hp)
-            while (trustHistory.size > TrustEngine.HISTORY_MAX) trustHistory.removeFirst()
             if (buffer.size >= FLUSH_SIZE) lifecycleScope.launch { flush() }
         }
     }
 
     private suspend fun flush() {
+        val container = (application as FogMapApp).container
+        // Граница суток — ДО ветки starved (day-track-history D5/D6): полночь
+        // режет день строго в 00:00, новый день материализуется пустой строкой
+        // даже если писать нечего; коридор через полночь не тянется.
+        runCatching {
+            val today = java.time.LocalDate.now()
+            if (today != chunkDate) {
+                trackId = container.trackRepository.openDayChunk(today)
+                chunkDate = today
+            }
+        }
         // suspend-вызовы — строго вне synchronized (иначе critical section).
         val starved: Boolean = synchronized(buffer) {
             buffer.isEmpty() && rejected.isEmpty()
@@ -169,17 +197,36 @@ class TrackingService : LifecycleService() {
             rejected.clear()
             copy
         }
-        val container = (application as FogMapApp).container
+        // ВРЕМЕННОЕ (dev-logging): замер транзакции flush (только counts, без координат).
+        val t0 = System.nanoTime()
+        var newCells = 0
+        val batchSize = batch.size
+        val rejSize = rej.values.sum()
         runCatching {
-            // Граница суток: новый чанк до записи (коридор через полночь
-            // не тянется — у нового трека нет хвоста, честно по spec).
-            val today = java.time.LocalDate.now()
-            if (today != chunkDate) {
-                trackId = container.trackRepository.startDayChunk(today)
-                chunkDate = today
+            // День уже гарантирован проверкой в начале flush (см. выше):
+            // батч всегда пишется в строку текущей даты, без хвоста прошлого дня.
+            if (batch.isNotEmpty()) {
+                newCells = container.fogRepository.appendPoints(trackId, batch).newCells
             }
-            if (batch.isNotEmpty()) container.fogRepository.appendPoints(trackId, batch)
             if (rej.isNotEmpty()) container.fogRepository.recordRejected(rej)
+        }
+        val txnMs = (System.nanoTime() - t0) / 1e6
+        if (txnMs > 500.0) {
+            DevLog.w(
+                "TRACK", "slow_flush",
+                mapOf(
+                    "batch" to batchSize, "rejected" to rejSize,
+                    "txn_ms" to String.format(Locale.US, "%.1f", txnMs), "new_cells" to newCells
+                )
+            )
+        } else {
+            DevLog.i(
+                "TRACK", "flush",
+                mapOf(
+                    "batch" to batchSize, "rejected" to rejSize,
+                    "txn_ms" to String.format(Locale.US, "%.1f", txnMs), "new_cells" to newCells
+                )
+            )
         }
     }
 
@@ -200,6 +247,8 @@ class TrackingService : LifecycleService() {
         runCatching {
             container.fogRepository.recordRejected(mapOf(FogRepository.REJECT_NO_FIX to 1))
         }
+        // ВРЕМЕННОЕ (dev-logging): тишина Fused.
+        DevLog.i("TRACK", "no_fix", mapOf("gap_ms" to NO_FIX_GAP_MS))
     }
 
     /**
@@ -249,6 +298,8 @@ class TrackingService : LifecycleService() {
     }
 
     override fun onDestroy() {
+        // ВРЕМЕННОЕ (dev-logging): остановка сервиса.
+        DevLog.i("TRACK", "service_stop")
         runCatching {
             LocationServices.getFusedLocationProviderClient(this)
                 .removeLocationUpdates(callback)

@@ -19,6 +19,7 @@ import androidx.datastore.preferences.core.preferencesOf
 import androidx.navigation.NavController
 import ru.fogmap.FogMapApp
 import ru.fogmap.data.PrefsKeys
+import ru.fogmap.diag.DevLog
 import ru.fogmap.tracking.TrackingService
 
 /**
@@ -45,7 +46,13 @@ fun BottomBar(nav: NavController, current: String) {
         for ((route, label, icon) in entries) {
             NavigationBarItem(
                 selected = current == route,
-                onClick = { if (current != route) nav.navigate(route) },
+                onClick = {
+                    if (current != route) {
+                        // ВРЕМЕННОЕ (dev-logging): переход навигации.
+                        DevLog.d("UI", "nav", mapOf("from" to current, "to" to route))
+                        nav.navigate(route)
+                    }
+                },
                 icon = {
                     if (route == "map" && recording) {
                         BadgedBox(badge = { Badge() }) {

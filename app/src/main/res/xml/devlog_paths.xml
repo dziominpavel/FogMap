@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ВРЕМЕННОЕ (dev-logging): Share сегодняшнего JSONL из cache/logs. -->
+<paths>
+    <cache-path name="devlog" path="logs/" />
+</paths>

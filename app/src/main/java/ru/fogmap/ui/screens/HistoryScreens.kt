@@ -196,6 +196,10 @@ fun HistoryDetailScreen(nav: NavController, trackId: Long) {
     val scope = rememberCoroutineScope()
     var track by remember { mutableStateOf<TrackEntity?>(null) }
     var pointEnts by remember { mutableStateOf<List<TrackPointEntity>>(emptyList()) }
+    // День-атом (day-track-history 3.1/4.1): дельта нового тумана за дату дня
+    // из материализованных счетчиков + диагностика отбросов за тот же день.
+    var dayAreaKm2 by remember { mutableStateOf<Double?>(null) }
+    var dayRejected by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
     val points = pointEnts.map { Point(it.lat, it.lon) }
     var renameOpen by remember { mutableStateOf(false) }
     var deleteOpen by remember { mutableStateOf(false) }
@@ -209,6 +213,17 @@ fun HistoryDetailScreen(nav: NavController, trackId: Long) {
         val all = app.container.trackRepository.allTracks()
         track = all.firstOrNull { it.id == trackId }
         pointEnts = app.container.trackRepository.pointsOf(trackId)
+        // Дельта и диагностика — по дате старта дня (день-атом).
+        runCatching {
+            val t = track
+            if (t != null) {
+                val zone = java.time.ZoneId.systemDefault()
+                val date = java.time.Instant.ofEpochMilli(t.startedAt).atZone(zone).toLocalDate()
+                val range = ru.fogmap.data.StatsRepository.dayRange(date)
+                dayAreaKm2 = app.container.statsRepository.stats(range).areaKm2
+                dayRejected = app.container.statsRepository.rejectedBreakdown(range)
+            }
+        }
     }
     Scaffold { pad ->
         Column(
@@ -237,11 +252,36 @@ fun HistoryDetailScreen(nav: NavController, trackId: Long) {
                                 style = MaterialTheme.typography.bodySmall
                             )
                         }
+                        // Дельта нового тумана за день (day-track-history).
+                        val area = dayAreaKm2
+                        if (area != null) {
+                            Text(
+                                "+${"%.2f".format(area)} км² нового тумана за день",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                        // Диагностика дня: «дома» vs «GPS резал» различимы.
+                        val rejTotal = dayRejected.values.sum()
+                        if (rejTotal > 0) {
+                            Text(
+                                "Отброшено точек: $rejTotal (" +
+                                    dayRejected.entries
+                                        .filter { it.value > 0 }
+                                        .joinToString { "${it.key}: ${it.value}" } +
+                                    ")",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        } else if (t.pointsCount == 0) {
+                            Text(
+                                "Дома — GPS чистый, отбросов нет",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
                     }
                 }
             }
             if (points.isEmpty()) {
-                Text("Точек нет")
+                Text("Точек движения нет — день дома")
             } else if (!(context.applicationContext as FogMapApp).isMapKitReady) {
                 Text("Карта недоступна без API-ключа, точек: ${points.size}")
             } else {

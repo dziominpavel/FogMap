@@ -117,6 +117,17 @@ interface TrackDao {
     suspend fun trackById(id: Long): TrackEntity?
 
     /**
+     * День-атом (day-track-history): новейшая строка за интервал суток.
+     * Нужна для find-or-create — рестарт продолжает тот же день, а не плодит
+     * обломок. Старые дни-обломки лежат как есть: берем новейшую строку даты.
+     */
+    @Query(
+        "SELECT * FROM tracks WHERE startedAt >= :fromMs AND startedAt < :toMs " +
+            "ORDER BY startedAt DESC LIMIT 1"
+    )
+    suspend fun latestInRange(fromMs: Long, toMs: Long): TrackEntity?
+
+    /**
      * Хвост ожидания ворот C (trust-v2 2.1): последние неоткрытые точки трека.
      * Нужен после убийства процесса (догоняющее открытие) и для вето.
      */

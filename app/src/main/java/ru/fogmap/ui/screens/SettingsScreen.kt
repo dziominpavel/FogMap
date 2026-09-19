@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -48,16 +50,18 @@ fun SettingsScreen(nav: NavController) {
     val prefs by app.container.dataStore.data.collectAsState(initial = preferencesOf())
     val themeMode = prefs[ru.fogmap.data.PrefsKeys.THEME_MODE] ?: ThemeModes.DEFAULT
     val paused = prefs[ru.fogmap.data.PrefsKeys.PAUSED] ?: false
+    // ВРЕМЕННОЕ (dev-logging): тумблер диагностики.
+    val diagEnabled = prefs[ru.fogmap.data.PrefsKeys.DIAG_ENABLED] ?: true
     val version = remember {
         runCatching {
             @Suppress("DEPRECATION")
             context.packageManager.getPackageInfo(context.packageName, 0).versionName
-        }.getOrNull() ?: ""
+        }.getOrNull()?.takeIf { !it.isNullOrBlank() } ?: BuildConfig.VERSION_NAME.takeIf { !it.isNullOrBlank() } ?: "—"
     }
 
     Scaffold(bottomBar = { BottomBar(nav, "settings") }) { pad ->
         Column(
-            Modifier.padding(pad).fillMaxSize().padding(16.dp),
+            Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             // --- Внешний вид ---
@@ -111,6 +115,35 @@ fun SettingsScreen(nav: NavController) {
                     )
                 }
             }
+            // --- Диагностика (ВРЕМЕННОЕ, dev-logging: удалить вместе с change) ---
+            Text("Диагностика (временно)", style = MaterialTheme.typography.titleMedium)
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    androidx.compose.foundation.layout.Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Подробные логи", style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                "CAMERA/RENDER/PERF/UI/TRACK, TTL сутки",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                        Switch(
+                            checked = diagEnabled,
+                            onCheckedChange = { v ->
+                                scope.launch { app.container.settingsRepository.setDiagEnabled(v) }
+                            }
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(onClick = { nav.navigate("diagnostics") }) {
+                        Text("Открыть диагностику")
+                    }
+                }
+            }
             // --- Данные / опасная зона ---
             Text("Данные", style = MaterialTheme.typography.titleMedium)
             Card(Modifier.fillMaxWidth()) {
@@ -147,6 +180,7 @@ fun SettingsScreen(nav: NavController) {
                     )
                 }
             }
+            Spacer(Modifier.height(8.dp))
         }
     }
     if (confirmReset) {
