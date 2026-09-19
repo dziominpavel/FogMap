@@ -151,4 +151,50 @@ class FogPyramidTest {
         val big = FogMask.HolePx(0f, 0f, 100f, 50f)
         assertEquals(big, FogMask.ensureMinPx(big))
     }
+
+    @Test
+    fun `без перебора на границе 13 точные дырки сохраняются`() {
+        val base = FogGrid.cellFor(53.9, 27.56)
+        val holes = FogMask.holesForZoom(setOf(base), 13f)
+        assertTrue(holes.any { it.z == FogGrid.BASE_Z })
+        assertFalse(FogMask.overBudget(holes))
+    }
+
+    @Test
+    fun `перебор точных дырок откатывается на пятна z16`() {
+        val base = FogGrid.cellFor(53.9, 27.56)
+        // Диагональ: каждый ряд свой run, вертикальная склейка не работает —
+        // 900 клеток дают > 800 точных дырок (окно 13–13,6 в городе).
+        val cells = (0 until FogMask.MAX_HOLES + 100).map { i ->
+            FogGrid.Cell(base.x + i, base.y + 2 * i, FogGrid.BASE_Z)
+        }.toSet()
+        val holes = FogMask.holesForZoom(cells, 13f)
+        assertFalse("fallback не должен оставлять черный экран", holes.isEmpty())
+        assertFalse("пятна должны влезать в бюджет", FogMask.overBudget(holes))
+        assertTrue(holes.all { it.z == FogMask.MID_PRESENCE_Z })
+    }
+
+    @Test
+    fun `перебор пятен остается перебором для глухой вуали`() {
+        val base = FogGrid.cellFor(53.9, 27.56)
+        // Шаг 64 базовые клетки = шаг 2 на z16: каждый предок изолирован,
+        // и пятна сами превышают бюджет — второй уровень защиты.
+        val cells = (0 until FogMask.MAX_HOLES + 100).map { i ->
+            FogGrid.Cell(base.x + i * 64, base.y + i * 64, FogGrid.BASE_Z)
+        }.toSet()
+        val holes = FogMask.holesForZoom(cells, 13f)
+        assertTrue(FogMask.overBudget(holes))
+    }
+
+    @Test
+    fun `fallback не падает на грубых родителях компакшна`() {
+        val base = FogGrid.cellFor(53.9, 27.56)
+        val coarse = FogGrid.cellFor(53.9, 27.56, FogGrid.MIN_Z)
+        val fine = (0 until FogMask.MAX_HOLES + 100).map { i ->
+            FogGrid.Cell(base.x + i, base.y + 2 * i, FogGrid.BASE_Z)
+        }.toSet()
+        val holes = FogMask.holesForZoom(fine + coarse, 13f)
+        assertFalse(holes.isEmpty())
+        assertTrue(holes.all { it.z == FogMask.MID_PRESENCE_Z || it.z == FogGrid.MIN_Z })
+    }
 }

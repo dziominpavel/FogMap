@@ -32,6 +32,27 @@ object TrustEngine {
     const val STAND_CAP_MS = 3.0
     const val MOVING_CAP_MIN_MS = 15.0
     const val MOVING_CAP_FACTOR = 2.5
+    /**
+     * Сброс окна после трогания (track-fix 19.09): движение быстрее —
+     * существенное (выше GPS-джиттера ~0.5 м/с), стояночные нули
+     * выкидываются из окна. Медленное шарканье окно не сбрасывает.
+     */
+    const val PULL_RESET_MIN_MS = 1.0
+    /**
+     * Рывок относительно недавней скорости (track-fix 19.09): до 3x от
+     * максимума последних сегментов. Держит продолжение разгона, пока
+     * медиана догоняет (первая крейсерская точка после старта).
+     */
+    const val SPURT_FACTOR = 3.0
+    /**
+     * Старт из медленного контекста (track-fix 19.09, replay 19.09):
+     * медиана ниже — история ползучая/стояночная, судить рывок по ней
+     * нельзя (44 ложных SUSPECT за день при чистом GPS). Потолок 28 м/с
+     * (~225 м за 8 с): запуски до шоссейных скоростей проходят, выбросы
+     * 250 м+ ловятся, телепорт-гейт (>500 м) и ворота C страхуют дальше.
+     */
+    const val SLOW_MED_MS = 5.0
+    const val START_CAP_MS = 28.0
     const val HEADING_MIN_SPEED_MS = 8.0
     const val HEADING_MAX_TURN_DEG = 120.0
     const val TRUST_START = 40
@@ -77,7 +98,13 @@ object TrustEngine {
         val openFog: Boolean,
         /** Причина для счетчика отбросов (сейчас только jump) или null. */
         val countReject: String?,
-        val next: PrevState
+        val next: PrevState,
+        /**
+         * Сброс истории (track-fix 19.09): трогание после STAND — сервис
+         * выкидывает стояночные нули из окна, иначе отравленная медиана
+         * держит потолок 15 м/с еще ~8 точек (~1 км серого).
+         */
+        val resetHistory: Boolean = false
     )
 
     fun evaluate(prev: PrevState?, history: List<HistPoint>, new: HistPoint): Verdict {
@@ -140,12 +167,20 @@ object TrustEngine {
             }
         }
 
-        // 3. Прыжок по скорости: потолок зависит от состояния и серии.
-        // Короткая история (< 3 точек) — контекст неизвестен (например, рестарт
-        // сервиса на трассе): мягкий потолок, иначе любой старт = ложный jump.
+        // 3. Прыжок по скорости: потолок — максимум из оценок (track-fix 19.09).
+        // Ни одна оценка в одиночку не работает: медиана отравляется ползучим
+        // контекстом (44 ложных SUSPECT 19.09 из стояночно-ползучего окна),
+        // недавний максимум не видит старт с места. Поэтому:
+        // пол (15) + медиана 2.5x (ровный крейсер, проверено 726 точками) +
+        // рывок 3x (продолжение разгона) + старт из медленного (28).
+        // Короткая история (< 3 точек) — контекст неизвестен: мягкий потолок.
+        // Настоящие выбросы ловят телепорт-гейт, разворот и ворота C.
+        val med = medianImplied(history)
+        val rec = maxRecentImplied(history)
+        val slowStart = if (med < SLOW_MED_MS) START_CAP_MS else 0.0
         val cap = when {
-            prev?.state == State.MOVING || prev?.state == State.SUSPECT ->
-                maxOf(MOVING_CAP_MIN_MS, MOVING_CAP_FACTOR * medianImplied(history))
+            prev != null ->
+                maxOf(MOVING_CAP_MIN_MS, MOVING_CAP_FACTOR * med, SPURT_FACTOR * rec, slowStart)
             history.size >= 3 -> STAND_CAP_MS
             else -> MOVING_CAP_MIN_MS
         }
@@ -175,9 +210,15 @@ object TrustEngine {
                 else -> {
                     // Из STAND/SUSPECT: шевеление в пределах шума — еще стоим,
                     // заметное смещение — начало движения (не прыжок: см. шаг 3).
+                    // Существенное трогание после STAND помечает сброс окна
+                    // (джиттер 0.5 м/с окно не сбрасывает — иначе статика
+                    // никогда не наберет 5 точек).
                     if (implied > 0.5) {
                         val open = trust >= FogGrid.TRUST_OPEN
-                        Verdict(State.MOVING, trust, open, null, PrevState(State.MOVING, trust))
+                        Verdict(
+                            State.MOVING, trust, open, null, PrevState(State.MOVING, trust),
+                            resetHistory = prev?.state == State.STAND && implied > PULL_RESET_MIN_MS
+                        )
                     } else {
                         val standTrust = minOf(TRUST_STAND, (prev?.trust ?: TRUST_START) + TRUST_STEP)
                         Verdict(State.STAND, standTrust, false, null, PrevState(State.STAND, standTrust))
@@ -190,13 +231,16 @@ object TrustEngine {
 
     /**
      * Сброс после тишины (trust-v2 B): dt больше порога — контекст аннулирован.
-     * Доверие в стартовое, первая точка туман не открывает (кроме SUSPECT —
-     * подозрение сильнее тишины, якорь/подозреваемый сохраняются).
+     * Доверие в стартовое (кроме SUSPECT — подозрение сильнее тишины,
+     * якорь/подозреваемый сохраняются). Первая точка ДВИЖЕНИЯ после тишины
+     * идет в ОЖИДАНИЕ ворот C (track-fix 19.09), а не в вечное вердиктное
+     * вето: решение откладывается до прихода successors. STAND статика
+     * остается закрытой как раньше.
      */
     private fun afterSilence(v: Verdict, dtS: Long): Verdict {
         if (dtS <= SILENCE_RESET_S || v.state == State.SUSPECT) return v
         val next = PrevState(v.next.state, TRUST_START)
-        return v.copy(trust = TRUST_START, openFog = false, next = next)
+        return v.copy(trust = TRUST_START, openFog = v.state == State.MOVING, next = next)
     }
 
     /** Медиана implied-скоростей соседних пар истории (устойчива к 1 выбросу). */
@@ -211,6 +255,25 @@ object TrustEngine {
         speeds.sort()
         return if (speeds.size % 2 == 1) speeds[speeds.size / 2]
         else (speeds[speeds.size / 2 - 1] + speeds[speeds.size / 2]) / 2.0
+    }
+
+    /**
+     * Максимум implied-скоростей последних [k] сегментов истории
+     * (track-fix 19.09): на тонком окне после сброса медиане не из чего
+     * считаться, недавний максимум держит разгон. Пусто — 0.0.
+     */
+    internal fun maxRecentImplied(history: List<HistPoint>, k: Int = 3): Double {
+        if (history.size < 2) return 0.0
+        var m = 0.0
+        var n = 0
+        for (i in history.size - 1 downTo 1) {
+            if (n >= k) break
+            val a = history[i - 1]; val b = history[i]
+            val dt = ((b.time - a.time) / 1000).coerceAtLeast(1)
+            m = maxOf(m, FogRepository.haversineM(a.lat, a.lon, b.lat, b.lon) / dt)
+            n++
+        }
+        return m
     }
 
     /** Резкий разворот: угол между соседними отрезками больше порога. */

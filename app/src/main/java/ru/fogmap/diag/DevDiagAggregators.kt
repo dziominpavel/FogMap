@@ -20,13 +20,9 @@ object DevCameraStats {
     const val STORM_MIN_WINDOW_MS = 500L
 
     private var count = 0
-    private var tiltNonZero = 0
-    private var tiltFix = 0
     private var moves = 0
     private var stormFired = false
     private var lastZoom = 0f
-    private var lastAzimuth = 0f
-    private var lastTilt = 0f
     private var windowStartMono = 0L
     private var started = false
 
@@ -37,17 +33,15 @@ object DevCameraStats {
     }
 
     @Synchronized
-    fun onEvent(zoom: Float, azimuth: Float, tilt: Float, tiltFixed: Boolean, nowMono: Long) {
+    // remove-map-rotation: углов камеры в логах нет — север всегда сверху,
+    // наклон всегда 0 по построению.
+    fun onEvent(zoom: Float, nowMono: Long) {
         if (!started) {
             started = true
             windowStartMono = nowMono
         }
         count++
         lastZoom = zoom
-        lastAzimuth = azimuth
-        lastTilt = tilt
-        if (tilt > 1f) tiltNonZero++
-        if (tiltFixed) tiltFix++
         val dtMs = nowMono - windowStartMono
         // no-tilt-plus-diag: детектор шторма — сразу, не дожидаясь конца окна.
         // Строки строятся только в момент срабатывания (раз на окно), не на событие.
@@ -62,8 +56,6 @@ object DevCameraStats {
                         "events" to count,
                         "window_ms" to dtMs,
                         "zoom" to String.format(Locale.US, "%.1f", lastZoom),
-                        "azimuth" to String.format(Locale.US, "%.0f", lastAzimuth),
-                        "tilt" to String.format(Locale.US, "%.1f", lastTilt),
                         "moves" to moves
                     )
                 )
@@ -77,16 +69,10 @@ object DevCameraStats {
                     "events" to count,
                     "events_per_s" to String.format(Locale.US, "%.1f", eps),
                     "zoom" to String.format(Locale.US, "%.1f", lastZoom),
-                    "azimuth" to String.format(Locale.US, "%.0f", lastAzimuth),
-                    "tilt" to String.format(Locale.US, "%.1f", lastTilt),
-                    "tilt_nonzero" to tiltNonZero,
-                    "tilt_fix" to tiltFix,
                     "moves" to moves
                 )
             )
             count = 0
-            tiltNonZero = 0
-            tiltFix = 0
             moves = 0
             stormFired = false
             windowStartMono = nowMono

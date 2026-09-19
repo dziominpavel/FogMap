@@ -6,18 +6,19 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 /**
- * БД Room (ЧП-2): visited_cells + tracks + track_points + counters.
+ * БД Room (ЧП-2): visited_cells + tracks + track_points + counters + raw_fixes.
  * Миграции с версии 1, без шифрования (решение ЧП-7).
  */
 @Database(
-    entities = [VisitedCell::class, TrackEntity::class, TrackPointEntity::class, CounterEntity::class],
-    version = 5,
+    entities = [VisitedCell::class, TrackEntity::class, TrackPointEntity::class, CounterEntity::class, RawFixEntity::class],
+    version = 6,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun fogDao(): FogDao
     abstract fun trackDao(): TrackDao
     abstract fun counterDao(): CounterDao
+    abstract fun rawFixDao(): RawFixDao
 
     companion object {
         /** v1 -> v2: индекс по track_points(trackId) для быстрого чтения трека. */
@@ -69,6 +70,26 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE track_points ADD COLUMN state TEXT NOT NULL DEFAULT 'MOVING'")
                 db.execSQL("ALTER TABLE track_points ADD COLUMN rejectReason TEXT")
                 db.execSQL("ALTER TABLE track_points ADD COLUMN fogOpened INTEGER NOT NULL DEFAULT 1")
+            }
+        }
+
+        /**
+         * v5 -> v6: сырой лог черного ящика (track-debug 1.1). Отдельная таблица
+         * raw_fixes, туман и треки не трогаются, старых данных нет.
+         */
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS raw_fixes (" +
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "day TEXT NOT NULL, time INTEGER NOT NULL, " +
+                        "lat REAL NOT NULL, lon REAL NOT NULL, acc REAL NOT NULL, " +
+                        "speed REAL, isMock INTEGER NOT NULL, filter TEXT NOT NULL, " +
+                        "state TEXT, trust INTEGER, openFog INTEGER, " +
+                        "rejectReason TEXT, implied REAL, cap REAL, teleport INTEGER)"
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_raw_fixes_day ON raw_fixes(day)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_raw_fixes_time ON raw_fixes(time)")
             }
         }
     }

@@ -32,6 +32,7 @@ import ru.fogmap.R
 import ru.fogmap.data.FogRepository
 import ru.fogmap.data.PrefsKeys
 import ru.fogmap.data.RawPoint
+import ru.fogmap.data.db.RawFixEntity
 import ru.fogmap.diag.DevLog
 
 /**
@@ -43,6 +44,8 @@ import ru.fogmap.diag.DevLog
 class TrackingService : LifecycleService() {
 
     private val buffer = mutableListOf<RawPoint>()
+    /** Сырой черный ящик (track-debug): каждый fix до фильтров, сливается на flush. */
+    private val rawBuffer = mutableListOf<RawFixEntity>()
     /** Отбросы текущей пачки: причина -> count (tracking-reliability 3.1). */
     private val rejected = mutableMapOf<String, Long>()
     private var trackId: Long = -1
@@ -114,15 +117,26 @@ class TrackingService : LifecycleService() {
         lastFixTime = System.currentTimeMillis()
         @Suppress("DEPRECATION")
         val isMock = if (Build.VERSION.SDK_INT >= 31) loc.isMock else loc.isFromMockProvider
+        val accOrDef = if (loc.hasAccuracy()) loc.accuracy else -1f
+        val speedOrNull = if (loc.hasSpeed()) loc.speed else null
         val input = LocationFilter.Input(
             accuracy = if (loc.hasAccuracy()) loc.accuracy else null,
-            speed = if (loc.hasSpeed()) loc.speed else null,
+            speed = speedOrNull,
             isMock = isMock
         )
         val reason = LocationFilter.reason(input)
         if (reason != LocationFilter.Reason.OK) {
             synchronized(buffer) {
                 rejected[reason.key] = (rejected[reason.key] ?: 0) + 1
+                // Черный ящик: отброс фильтра сохраняется с координатами.
+                rawBuffer.add(
+                    rawOf(
+                        loc = loc, accOrDef = accOrDef, speedOrNull = speedOrNull,
+                        isMock = isMock, filter = reason.key,
+                        state = null, trust = null, openFog = null, rejectReason = null,
+                        history = trustHistory.toList()
+                    )
+                )
             }
             return
         }
@@ -136,15 +150,44 @@ class TrackingService : LifecycleService() {
             if (pausedCached) {
                 rejected[FogRepository.REJECT_PAUSED] =
                     (rejected[FogRepository.REJECT_PAUSED] ?: 0) + 1
+                rawBuffer.add(
+                    rawOf(
+                        loc = loc, accOrDef = accOrDef, speedOrNull = speedOrNull,
+                        isMock = isMock, filter = FogRepository.REJECT_PAUSED,
+                        state = null, trust = null, openFog = null, rejectReason = null,
+                        history = trustHistory.toList()
+                    )
+                )
                 return
             }
-            val verdict = TrustEngine.evaluate(trustPrev, trustHistory.toList(), hp)
+            val historySnap = trustHistory.toList()
+            val prevSnap = trustPrev
+            val verdict = TrustEngine.evaluate(trustPrev, historySnap, hp)
             trustPrev = verdict.next
             verdict.countReject?.let { key ->
                 rejected[key] = (rejected[key] ?: 0) + 1
             }
+            // Сброс окна после существенного трогания (track-fix 19.09):
+            // стояночные нули выкидываются, но последний кадр остается
+            // якорем непрерывности (иначе медиане не из чего считаться).
+            if (verdict.resetHistory) {
+                val keep = trustHistory.lastOrNull()
+                trustHistory.clear()
+                if (keep != null) trustHistory.addLast(keep)
+            }
             trustHistory.addLast(hp)
             while (trustHistory.size > TrustEngine.HISTORY_MAX) trustHistory.removeFirst()
+            // Черный ящик: вердикт пишется всегда, включая STAND.
+            rawBuffer.add(
+                rawOf(
+                    loc = loc, accOrDef = accOrDef, speedOrNull = speedOrNull,
+                    isMock = isMock, filter = LocationFilter.Reason.OK.key,
+                    state = verdict.state.name, trust = verdict.trust,
+                    openFog = if (verdict.openFog) 1 else 0,
+                    rejectReason = verdict.countReject,
+                    history = historySnap, prev = prevSnap
+                )
+            )
             // День-атом (day-track-history D2): статика (STAND — стою, открывать
             // нечего) в БД не пишется вообще: ни точки, ни rejected. Движок
             // доверия при этом шагает как раньше (история в памяти нужна,
@@ -167,6 +210,30 @@ class TrackingService : LifecycleService() {
         }
     }
 
+    /**
+     * Строка черного ящика (track-debug 1.2): собирается синхронно в колбэке
+     * из того же fix и того же вердикта что и точка трека. Чистая математика —
+     * в [RawTrace], здесь только разбор Location.
+     */
+    private fun rawOf(
+        loc: Location,
+        accOrDef: Float,
+        speedOrNull: Float?,
+        isMock: Boolean,
+        filter: String,
+        state: String?,
+        trust: Int?,
+        openFog: Int?,
+        rejectReason: String?,
+        history: List<TrustEngine.HistPoint>,
+        prev: TrustEngine.PrevState? = null
+    ): RawFixEntity = RawTrace.build(
+        time = loc.time, lat = loc.latitude, lon = loc.longitude,
+        acc = accOrDef, speed = speedOrNull, isMock = isMock, filter = filter,
+        state = state, trust = trust, openFog = openFog, rejectReason = rejectReason,
+        history = history, prev = prev
+    )
+
     private suspend fun flush() {
         val container = (application as FogMapApp).container
         // Граница суток — ДО ветки starved (day-track-history D5/D6): полночь
@@ -181,7 +248,7 @@ class TrackingService : LifecycleService() {
         }
         // suspend-вызовы — строго вне synchronized (иначе critical section).
         val starved: Boolean = synchronized(buffer) {
-            buffer.isEmpty() && rejected.isEmpty()
+            buffer.isEmpty() && rejected.isEmpty() && rawBuffer.isEmpty()
         }
         if (starved) {
             flushIfStarved()
@@ -197,6 +264,11 @@ class TrackingService : LifecycleService() {
             rejected.clear()
             copy
         }
+        val rawBatch: List<RawFixEntity> = synchronized(buffer) {
+            val copy = rawBuffer.toList()
+            rawBuffer.clear()
+            copy
+        }
         // ВРЕМЕННОЕ (dev-logging): замер транзакции flush (только counts, без координат).
         val t0 = System.nanoTime()
         var newCells = 0
@@ -205,6 +277,9 @@ class TrackingService : LifecycleService() {
         runCatching {
             // День уже гарантирован проверкой в начале flush (см. выше):
             // батч всегда пишется в строку текущей даты, без хвоста прошлого дня.
+            if (rawBatch.isNotEmpty()) {
+                container.db.rawFixDao().insertAll(rawBatch)
+            }
             if (batch.isNotEmpty()) {
                 newCells = container.fogRepository.appendPoints(trackId, batch).newCells
             }

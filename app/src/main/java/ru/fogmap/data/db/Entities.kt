@@ -127,6 +127,13 @@ interface TrackDao {
     )
     suspend fun latestInRange(fromMs: Long, toMs: Long): TrackEntity?
 
+    /** Все строки диапазона (track-debug): перезапись дня удаляет их перед rebuild. */
+    @Query("SELECT * FROM tracks WHERE startedAt >= :fromMs AND startedAt < :toMs")
+    suspend fun inRange(fromMs: Long, toMs: Long): List<TrackEntity>
+
+    @Query("DELETE FROM tracks WHERE id IN (:ids)")
+    suspend fun deleteTracks(ids: List<Long>)
+
     /**
      * Хвост ожидания ворот C (trust-v2 2.1): последние неоткрытые точки трека.
      * Нужен после убийства процесса (догоняющее открытие) и для вето.
@@ -143,6 +150,14 @@ interface TrackDao {
     /** Вето ворот C: строка закрыта навсегда (линия остается, туман — нет). */
     @Query("UPDATE track_points SET fogOpened = 2 WHERE id IN (:ids)")
     suspend fun markClosed(ids: List<Long>)
+
+    /**
+     * Вето с причиной (track-fix 19.09, аудит): та же вечность, плюс
+     * rejectReason = veto_return/veto_stale. Кандидаты ворот всегда
+     * приходят с пустым rejectReason, потери данных нет.
+     */
+    @Query("UPDATE track_points SET fogOpened = 2, rejectReason = :reason WHERE id IN (:ids)")
+    suspend fun markClosedWithReason(ids: List<Long>, reason: String)
 
     /**
      * Последняя открытая точка трека — якорь коридоров и вето (ворота C).
@@ -164,6 +179,14 @@ interface TrackDao {
     )
     suspend fun addStats(id: Long, distM: Double, count: Int, finishedAt: Long)
 
+    /**
+     * Границы дня из данных (track-fix 19.09, rebuild): чанк дня создается
+     * «сейчас», а точки — из прошлого; без правки startedAt > finishedAt
+     * и карточка показывает 0 мин.
+     */
+    @Query("UPDATE tracks SET startedAt = :startedAt, finishedAt = :finishedAt WHERE id = :id")
+    suspend fun fixDayBounds(id: Long, startedAt: Long, finishedAt: Long)
+
     @Query("UPDATE tracks SET name = :name WHERE id = :id")
     suspend fun rename(id: Long, name: String)
 
@@ -180,10 +203,66 @@ interface TrackDao {
     suspend fun clearPoints()
 }
 
+@Entity(
+    tableName = "raw_fixes",
+    indices = [Index("day"), Index("time")]
+)
+data class RawFixEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    /** День-ключ yyyy-MM-dd для списка хранилища и батч-экспорта за период. */
+    val day: String,
+    val time: Long,
+    val lat: Double,
+    val lon: Double,
+    val acc: Float,
+    val speed: Float?,
+    val isMock: Boolean,
+    /** Вердикт фильтра: ok / accuracy / speed / mock / paused. */
+    val filter: String,
+    /** Вердикт TrustEngine: STAND / MOVING / SUSPECT, null = до движка не дошло. */
+    val state: String? = null,
+    val trust: Int? = null,
+    /** Кандидат ворот: 1/0, null = до движка не дошло. */
+    val openFog: Int? = null,
+    val rejectReason: String? = null,
+    /** Диагностика прыжка для калибровки: implied-скорость и cap на момент вердикта. */
+    val implied: Double? = null,
+    val cap: Double? = null,
+    /** Телепорт-гейт сработал: 1/0/null. */
+    val teleport: Int? = null
+)
+
+@Dao
+interface RawFixDao {
+    @Insert
+    suspend fun insertAll(rows: List<RawFixEntity>)
+
+    @Query("SELECT * FROM raw_fixes WHERE day >= :fromDay AND day <= :toDay ORDER BY time ASC")
+    suspend fun range(fromDay: String, toDay: String): List<RawFixEntity>
+
+    @Query("SELECT DISTINCT day FROM raw_fixes ORDER BY day DESC")
+    suspend fun days(): List<String>
+
+    @Query("SELECT COUNT(*) FROM raw_fixes WHERE day = :day")
+    suspend fun countOf(day: String): Long
+
+    @Query("SELECT * FROM raw_fixes WHERE day = :day ORDER BY time ASC")
+    suspend fun ofDay(day: String): List<RawFixEntity>
+
+    @Query("DELETE FROM raw_fixes WHERE day = :day")
+    suspend fun deleteDay(day: String)
+
+    @Query("DELETE FROM raw_fixes")
+    suspend fun clearAll()
+}
+
 @Dao
 interface CounterDao {
     @Query("SELECT value FROM counters WHERE `key` = :key")
     suspend fun get(key: String): Long?
+
+    @Query("SELECT * FROM counters")
+    suspend fun all(): List<CounterEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun set(counter: CounterEntity)

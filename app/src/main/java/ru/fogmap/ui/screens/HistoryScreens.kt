@@ -4,7 +4,10 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Row
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -50,6 +53,8 @@ import com.yandex.mapkit.map.CameraPosition
 import com.yandex.mapkit.map.LineStyle
 import com.yandex.mapkit.mapview.MapView
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import ru.fogmap.FogMapApp
 import ru.fogmap.R
 import ru.fogmap.data.PrefsKeys
@@ -68,10 +73,16 @@ import java.util.Locale
 fun HistoryScreen(nav: NavController) {
     val context = LocalContext.current
     val app = context.applicationContext as FogMapApp
+    val scope = rememberCoroutineScope()
     var tracks by remember { mutableStateOf<List<TrackEntity>>(emptyList()) }
     // Диагностика дня (tracking-reliability 3.2): пустота объясняется отбросами.
     var rejectedToday by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
     LaunchedEffect(Unit) {
+        tracks = app.container.trackRepository.allTracks()
+        rejectedToday = app.container.statsRepository
+            .rejectedBreakdown(ru.fogmap.data.StatsRepository.dayRange())
+    }
+    suspend fun reload() {
         tracks = app.container.trackRepository.allTracks()
         rejectedToday = app.container.statsRepository
             .rejectedBreakdown(ru.fogmap.data.StatsRepository.dayRange())
@@ -83,6 +94,8 @@ fun HistoryScreen(nav: NavController) {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
+                DebugBatchCard(onImported = { scope.launch { reload() } })
+                Spacer(Modifier.height(16.dp))
                 Image(
                     painterResource(R.drawable.img_empty_history),
                     contentDescription = null,
@@ -114,6 +127,9 @@ fun HistoryScreen(nav: NavController) {
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp)
             ) {
+                item {
+                    DebugBatchCard(onImported = { scope.launch { reload() } })
+                }
                 items(tracks, key = { it.id }) { t ->
                     Card(onClick = { nav.navigate("history/${t.id}") }) {
                         ListItem(
@@ -141,6 +157,83 @@ fun HistoryScreen(nav: NavController) {
 /** Длительность трека в минутах по startedAt/finishedAt (tracking-reliability 1.2). */
 internal fun trackDurationMin(startedAt: Long, finishedAt: Long): Long =
     ((finishedAt - startedAt).coerceAtLeast(0) / 60_000)
+
+/**
+ * Батч выгрузки/загрузки треков (track-debug 4.2): диапазон от-до, Share ZIP
+ * в Telegram без варнингов, импорт системным picker с перезаписью день-в-день
+ * и full rebuild. Проверка глазами на карте достаточна.
+ */
+@Composable
+private fun DebugBatchCard(onImported: () -> Unit) {
+    val context = LocalContext.current
+    val app = context.applicationContext as FogMapApp
+    val scope = rememberCoroutineScope()
+    var fromDay by remember {
+        mutableStateOf(java.time.LocalDate.now().toString())
+    }
+    var toDay by remember {
+        mutableStateOf(java.time.LocalDate.now().toString())
+    }
+    var status by remember { mutableStateOf("") }
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            status = "Импорт..."
+            runCatching {
+                val bytes = withContext(Dispatchers.IO) {
+                    context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: throw IllegalStateException("пустой файл")
+                }
+                withContext(Dispatchers.IO) {
+                    ru.fogmap.data.TrackDebugImport.importAndRebuild(app.container.db, bytes)
+                }
+                onImported()
+                status = "Импортировано $fromDay..$toDay, туман пересчитан"
+            }.onFailure { status = "Ошибка импорта: ${it.message}" }
+        }
+    }
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Выгрузка треков", style = MaterialTheme.typography.titleMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    fromDay, { fromDay = it },
+                    label = { Text("От") },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    toDay, { toDay = it },
+                    label = { Text("До") },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = {
+                    scope.launch {
+                        status = "Собираю..."
+                        runCatching {
+                            val file = withContext(Dispatchers.IO) {
+                                ru.fogmap.data.TrackDebugShare.buildExportFile(
+                                    app.container, fromDay, toDay
+                                )
+                            }
+                            ru.fogmap.data.TrackDebugShare.shareZip(context, file)
+                            status = "ZIP $fromDay..$toDay готов"
+                        }.onFailure { status = "Ошибка экспорта: ${it.message}" }
+                    }
+                }) { Text("Выгрузить") }
+                OutlinedButton(onClick = { importLauncher.launch("application/zip") }) {
+                    Text("Импорт")
+                }
+            }
+            if (status.isNotEmpty()) Text(status, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
 
 /** Цвета линии трека по доверию (trust-v2 3.2). */
 private const val TRUSTED_LINE = 0xFF1E88E5.toInt() // синий: доверенные

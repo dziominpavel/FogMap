@@ -28,6 +28,12 @@ class TrustEngineTest {
         return series.map { p ->
             TrustEngine.evaluate(prev, history, p).also {
                 prev = it.next
+                // Зеркало сервиса и перепрожки: сброс окна с якорем.
+                if (it.resetHistory) {
+                    val keep = history.lastOrNull()
+                    history.clear()
+                    if (keep != null) history.add(keep)
+                }
                 history.add(p)
                 while (history.size > TrustEngine.HISTORY_MAX) history.removeAt(0)
             }
@@ -81,7 +87,9 @@ class TrustEngineTest {
         assertNull(vGap.countReject)
         // Без сброса было бы 100 (доверие набрано серией).
         assertEquals(TrustEngine.TRUST_START, vGap.trust)
-        assertFalse(vGap.openFog)
+        // track-fix 19.09: первая точка после тишины — ожидание ворот C,
+        // а не вечное вердиктное вето.
+        assertTrue(vGap.openFog)
         val vNext = verdicts.last()
         assertEquals(TrustEngine.State.MOVING, vNext.state)
         assertTrue(vNext.openFog)
@@ -181,5 +189,50 @@ class TrustEngineTest {
         assertEquals(TrustEngine.State.MOVING, last.state)
         assertTrue("доверие ${last.trust}", last.trust <= 60)
         assertTrue(last.openFog) // средняя кисть, не ноль
+    }
+
+    @Test
+    fun `старт машины со светофора — движение, а не подозрение`() {
+        // track-fix 19.09: 25 серых серий дня начинались с места при чистом
+        // GPS. Стоим 6 точек, трогаемся 5.5 м/с, дальше 16 м/с по проспекту.
+        val stand = (0 until 6).map { pt(53.9) }
+        val pull = pt(53.9 + 0.00045) // ~50 м за 8 с
+        val cruise = (1..4).map { pt(53.9 + 0.00045 + it * 0.0012) } // ~16 м/с
+        val verdicts = run(stand + listOf(pull) + cruise)
+        val vPull = verdicts[6]
+        assertEquals(TrustEngine.State.MOVING, vPull.state)
+        assertNull(vPull.countReject)
+        assertTrue(vPull.resetHistory)
+        // Медиана вымыта: крейсерская 16 м/с не дает ложных jump.
+        for (v in verdicts.drop(7)) {
+            assertEquals(TrustEngine.State.MOVING, v.state)
+            assertNull(v.countReject)
+        }
+        assertTrue(verdicts.last().openFog)
+    }
+
+    @Test
+    fun `выброс с места все еще подозрение`() {
+        // Льгота старта не покрывает настоящий выброс: 250 м за 8 с = 31 м/с.
+        val stand = (0 until 6).map { pt(53.9) }
+        val jump = pt(53.9 + 0.00225)
+        val verdicts = run(stand + listOf(jump))
+        val v = verdicts.last()
+        assertEquals(TrustEngine.State.SUSPECT, v.state)
+        assertEquals(FogRepository.REJECT_JUMP, v.countReject)
+        assertFalse(v.resetHistory)
+    }
+
+    @Test
+    fun `после тишины первая точка в ожидании, а не в вечном вето`() {
+        // Стоянка 5 мин, дальше проезд 400 м (тишина покрыла движение):
+        // доверие сброшено, но точка — кандидат ворот C.
+        val stand = (0 until 6).map { pt(53.9) }
+        val afterGap = pt(53.9 + 0.0036, dtS = 300)
+        val verdicts = run(stand + listOf(afterGap))
+        val v = verdicts.last()
+        assertEquals(TrustEngine.State.MOVING, v.state)
+        assertEquals(TrustEngine.TRUST_START, v.trust)
+        assertTrue(v.openFog)
     }
 }

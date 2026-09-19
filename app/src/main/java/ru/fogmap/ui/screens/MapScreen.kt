@@ -2,8 +2,8 @@ package ru.fogmap.ui.screens
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.PointF
 import android.os.SystemClock
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -39,8 +39,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.res.painterResource
@@ -50,12 +48,22 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.navigation.NavController
 import com.yandex.mapkit.Animation
+import com.yandex.mapkit.MapKitFactory
 import com.yandex.mapkit.geometry.Point
+import com.yandex.mapkit.layers.ObjectEvent
 import com.yandex.mapkit.map.CameraListener
 import com.yandex.mapkit.map.CameraPosition
+import com.yandex.mapkit.map.CameraUpdateReason
+import com.yandex.mapkit.map.IconStyle
 import com.yandex.mapkit.mapview.MapView
+import com.yandex.mapkit.user_location.UserLocationLayer
+import com.yandex.mapkit.user_location.UserLocationObjectListener
+import com.yandex.mapkit.user_location.UserLocationView
+import com.yandex.runtime.image.ImageProvider
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import ru.fogmap.FogMapApp
 import ru.fogmap.R
@@ -71,16 +79,21 @@ import ru.fogmap.map.FogMask.HolePx
 import ru.fogmap.map.FogMaskOverlay
 import ru.fogmap.tracking.TrackingPreconditions
 import ru.fogmap.tracking.TrackingService
+import ru.fogmap.tracking.TrustEngine
 import ru.fogmap.ui.BottomBar
 import ru.fogmap.ui.theme.isDarkTheme
-import kotlin.math.abs
 
 /**
- * Карта — главный экран (spec app-shell/map-render, fog-mask-canvas).
+ * Карта — главный экран (spec app-shell/map-render, fog-mask-canvas, location-cursor).
  * Туман — маской Canvas поверх MapView ([FogMaskOverlay]): глухая вуаль
- * первым кадром + мягкие дырки (fail-closed, рамок нет). Клетки живут
+ * первым кадром + мягкие дырки (fail-closed, рамок нет) + показная дырка
+ * вокруг живого фикса (только пиксели, в БД не пишется). Клетки живут
  * в памяти (прелоад + Flow), на сдвиг камеры запросов в БД нет.
- * Tilt зафиксирован в 0, чип зума и компас — справа над FAB.
+ * Курсор — нативный UserLocationLayer ПОД вуалью (красная точка, без стрелки
+ * и круга точности, headingMode никогда не включается). Follow по умолчанию:
+ * любой жест приостанавливает ведение на 10 сек тишины, FAB возвращает сразу.
+ * Tilt зафиксирован в 0, rotate запрещен, север всегда сверху;
+ * справа чип зума и FAB «Где я».
  */
 @Composable
 fun MapScreen(nav: NavController) {
@@ -152,19 +165,94 @@ fun MapScreen(nav: NavController) {
         val lifecycle = LocalLifecycleOwner.current.lifecycle
         val mapView = remember {
             MapView(context).apply {
-                // no-tilt-plus-diag: жест наклона запрещен в источнике (вид строго
-                // сверху, tilt всегда 0) — иначе двухпальцевый свайп уводит камеру
-                // в tilt ~50 и запускает петлю корректирующих move().
+                // no-tilt-plus-north-up: жесты наклона и поворота запрещены
+                // в источнике (вид строго сверху, север всегда сверху) —
+                // иначе двухпальцевые свайпы уводили камеру в tilt ~50 /
+                // azimuth != 0 и ломали проекцию дырок (схлопывание диагонали).
                 mapWindow.map.isTiltGesturesEnabled = false
+                mapWindow.map.isRotateGesturesEnabled = false
                 mapWindow.map.move(CameraPosition(Point(55.7558, 37.6173), 14f, 0f, 0f))
                 // ВРЕМЕННОЕ (dev-logging): исходящее программное движение.
                 runCatching { DevCameraStats.onMove() }
             }
         }
-        // Состояние камеры для маски/чипа/компаса (fog-mask-canvas 4.2–4.3).
+        // Курсор (location-cursor 2.1): нативный слой ПОД вуалью. Сильные ссылки
+        // обязательны — SDK держит слушателей как WeakReference (как camListenerRef).
+        // headingMode никогда не включаем: он крутит карту и ломает север-сверху.
+        val userLocationLayer: UserLocationLayer? = remember(mapView) {
+            runCatching {
+                MapKitFactory.getInstance().createUserLocationLayer(mapView.mapWindow)
+            }.getOrNull()
+        }
+        // Живая позиция из слоя (показ vs архив: трек правды — в БД, слой — экран).
+        var liveLatLon by remember { mutableStateOf<Pair<Double, Double>?>(null) }
+        var liveView by remember { mutableStateOf<UserLocationView?>(null) }
+        var liveLastMs by remember { mutableStateOf(0L) }
+        var nowTickMs by remember { mutableStateOf(SystemClock.elapsedRealtime()) }
+        // Follow (location-cursor 4.1): ведем по умолчанию, жест ставит на паузу.
+        var followActive by remember { mutableStateOf(true) }
+        var resumeJob by remember { mutableStateOf<Job?>(null) }
+        var firstLiveFix by remember { mutableStateOf(false) }
+        fun pullLivePosition(): Pair<Double, Double>? =
+            runCatching { userLocationLayer?.cameraPosition()?.target }
+                .getOrNull()?.let { it.latitude to it.longitude }
+        // Растр, не вектор: вектор MapKit не отрисовывает и молча оставляет
+        // свой дефолтный значок. Масштаб 1.5 от базы 12dp: красное ядро ~18dp
+        // на экране. Провайдер и стиль кешируем — применяются на каждое
+        // обновление объекта, иначе слой возвращает свой дефолт.
+        val pinProvider = remember(context) {
+            runCatching { ImageProvider.fromResource(context, R.drawable.ic_my_location) }
+                .getOrNull()
+        }
+        val pinStyle = remember {
+            IconStyle().setAnchor(PointF(0.5f, 0.5f)).setScale(1.5f)
+        }
+        fun styleLocationView(view: UserLocationView) {
+            val provider = pinProvider ?: return
+            runCatching { view.pin.setIcon(provider, pinStyle) }
+            // Стрелки и круга точности нет по спеку: только красный кружок.
+            runCatching { view.arrow.isVisible = false }
+            runCatching { view.accuracyCircle.isVisible = false }
+        }
+        val locationListener: UserLocationObjectListener = remember(context, userLocationLayer) {
+            object : UserLocationObjectListener {
+                override fun onObjectAdded(view: UserLocationView) {
+                    styleLocationView(view)
+                    liveView = view
+                    pullLivePosition()?.let {
+                        liveLatLon = it
+                        liveLastMs = SystemClock.elapsedRealtime()
+                    }
+                    // ВРЕМЕННОЕ (dev-logging): редкое событие, не кадр.
+                    DevLog.d("UI", "user_location", mapOf("event" to "added"))
+                }
+
+                override fun onObjectRemoved(view: UserLocationView) {
+                    if (liveView === view) liveView = null
+                    liveLatLon = null
+                    // ВРЕМЕННОЕ (dev-logging): редкое событие, не кадр.
+                    DevLog.d("UI", "user_location", mapOf("event" to "removed"))
+                }
+
+                override fun onObjectUpdated(view: UserLocationView, event: ObjectEvent) {
+                    liveView = view
+                    // Стиль на каждое обновление: слой может пересоздавать виды
+                    // и возвращать свой дефолт (зелень) вместо нашей иконки.
+                    styleLocationView(view)
+                    pullLivePosition()?.let {
+                        liveLatLon = it
+                        liveLastMs = SystemClock.elapsedRealtime()
+                    }
+                }
+            }
+        }
+        val locationListenerRef = remember(locationListener) {
+            java.lang.ref.WeakReference(locationListener)
+        }
+        // Состояние камеры для маски и чипа зума (remove-map-rotation:
+        // север всегда сверху, azimuth нет — только зум и target).
         // Target — парой (у Point нет equals, remember бы пересчитывал всегда).
         var camZoom by remember { mutableStateOf(14f) }
-        var camAzimuth by remember { mutableStateOf(0f) }
         var camTarget by remember { mutableStateOf(55.7558 to 37.6173) }
         // Туман в памяти: прелоад + живые инкременты (2.1–2.2).
         var cells by remember { mutableStateOf(emptySet<Cell>()) }
@@ -186,8 +274,9 @@ fun MapScreen(nav: NavController) {
         }
         // ВРЕМЕННОЕ (dev-logging): число клеток для PERF-агрегата.
         LaunchedEffect(cells.size) { DevPerfMonitor.setCells(cells.size) }
-        // Камера на текущую геолокацию: стартовая (чтобы не открываться в Москве)
-        // и кнопка «Где я». Всё через runCatching: microG может вернуть null.
+        // Камера на текущую геолокацию через Fused: стартовый прыжок (чтобы не
+        // открываться в Москве) и fallback FAB пока слой не отдал позицию.
+        // Всё через runCatching: microG может вернуть null.
         // Вызывать только с UI-потока (MapKit роняет процесс из фона).
         // Tilt всегда 0 (fog-mask-canvas 4.1): вид строго сверху.
         fun moveToMyLocation(zoom: Float) {
@@ -226,21 +315,49 @@ fun MapScreen(nav: NavController) {
                 }
             }
         }
+        // Камера к живой точке слоя (follow/FAB): зум caller задает сам.
+        // Вызывать только с UI-потока, tilt всегда 0. Fallback на Fused здесь
+        // нет — его держит moveToMyLocation для старта и пустого слоя.
+        fun moveToLive(zoom: Float) {
+            val target = pullLivePosition() ?: liveLatLon ?: return
+            runCatching {
+                mapView.mapWindow.map.move(
+                    CameraPosition(Point(target.first, target.second), zoom, 0f, 0f),
+                    Animation(Animation.Type.SMOOTH, 0.8f), null
+                )
+                // ВРЕМЕННОЕ (dev-logging): исходящее программное движение.
+                runCatching { DevCameraStats.onMove() }
+            }
+        }
         // Слушатель камеры: зум/азимут/target для маски и UI.
         // Tilt-жест отключен в SDK (см. создание mapView выше), поэтому
-        // корректирующего возврата нет: слушатель никогда не запускает
-        // move() — это и была самоподдерживающаяся петля (no-tilt-plus-diag).
+        // tilt-возвратов нет (no-tilt-plus-diag). Единственный исходящий move —
+        // follow-возврат через 10 сек тишины с причиной APPLICATION: он петлю
+        // не образует (жестовая ветка срабатывает только на GESTURES).
         // MapKit 4.42.0 принимает слушателя как WeakReference (как раньше FogLayer).
         val camListener = remember {
-            CameraListener { _, pos, _, _ ->
+            CameraListener { _, pos, reason, _ ->
                 camZoom = pos.zoom
-                camAzimuth = pos.azimuth
                 camTarget = pos.target.latitude to pos.target.longitude
+                // Follow (location-cursor 4.1): жест пользователя ставит ведение
+                // на паузу на 10 сек тишины. Свои move() идут с APPLICATION
+                // и таймер не трогают — иначе была бы самоподдерживающаяся петля.
+                if (reason == CameraUpdateReason.GESTURES && liveLatLon != null) {
+                    followActive = false
+                    resumeJob?.cancel()
+                    resumeJob = scope.launch {
+                        delay(10_000)
+                        followActive = true
+                        moveToLive(camZoom)
+                    }
+                }
                 // ВРЕМЕННОЕ (dev-logging): только примитивы, ноль строк в колбэке.
-                // tiltFixed=false: корректирующих движений больше нет.
+                // Углов камеры в логе нет (север сверху, наклон 0 по построению).
+                // Синхронных move() в колбэке нет: follow-возврат идет только
+                // асинхронно через таймер с причиной APPLICATION.
                 runCatching {
                     DevCameraStats.onEvent(
-                        pos.zoom, pos.azimuth, pos.tilt, false,
+                        pos.zoom,
                         SystemClock.elapsedRealtime()
                     )
                 }
@@ -279,12 +396,52 @@ fun MapScreen(nav: NavController) {
                 runCatching { mapView.mapWindow.map.removeCameraListener(camListenerRef) }
             }
         }
+        // Видимость слоя (location-cursor 2.1–2.2): жив пока открыта карта,
+        // пауза записи его не касается. headingMode не трогаем никогда.
+        DisposableEffect(mapView, userLocationLayer) {
+            runCatching { userLocationLayer?.setObjectListener(locationListenerRef) }
+            runCatching { userLocationLayer?.setHeadingModeActive(false) }
+            runCatching { userLocationLayer?.setVisible(true) }
+            onDispose {
+                runCatching { userLocationLayer?.setVisible(false) }
+                resumeJob?.cancel()
+            }
+        }
+        // Ведение за живой точкой (location-cursor 4.1): первый fix прыгает на
+        // 15f как раньше (стартовый moveToMyLocation уже отработал рядом),
+        // дальше едем на зуме пользователя. В ручном осмотре стоим.
+        LaunchedEffect(liveLatLon) {
+            val fix = liveLatLon ?: return@LaunchedEffect
+            if (!followActive) return@LaunchedEffect
+            if (!firstLiveFix) {
+                firstLiveFix = true
+                moveToLive(15f)
+            } else {
+                moveToLive(camZoom)
+            }
+        }
+        // Stale-тикер (location-cursor 2.2): тишина дольше порога TrustEngine —
+        // точку приглушаем, пятно и ведение остаются. Тик редкий, не кадр.
+        LaunchedEffect(Unit) {
+            while (true) {
+                delay(30_000)
+                nowTickMs = SystemClock.elapsedRealtime()
+            }
+        }
+        val isLiveStale = liveLatLon != null && liveLastMs > 0L &&
+            (nowTickMs - liveLastMs) > TrustEngine.SILENCE_RESET_S * 1000L
+        LaunchedEffect(liveView, isLiveStale) {
+            val view = liveView ?: return@LaunchedEffect
+            runCatching { view.pin.opacity = if (isLiveStale) 0.5f else 1f }
+        }
         // Дырки в пикселях: из памяти, проекция worldToScreen в UI-потоке.
-        // Ключи — клетки + зум + азимут + target: иначе при пане одним пальцем
+        // Ключи — клетки + зум + target: иначе при пане одним пальцем
         // (зум тот же) дырки стоят, а карта едет под ними.
+        // Север всегда сверху (remove-map-rotation): проекция по двум углам
+        // точна, azimuth-ключа нет.
         // worldToScreen может вернуть null (точка за камерой) — тогда дырки
         // нет (fail-closed). Лог — след спайка 1.1–1.2.
-        val holesPx: List<HolePx> = remember(cells, camZoom, camAzimuth, camTarget) {
+        val holesPx: List<HolePx> = remember(cells, camZoom, camTarget, liveLatLon) {
             // ВРЕМЕННОЕ (dev-logging): замеры merge vs проекция, агрегат вместо спама.
             val t0 = System.nanoTime()
             val region = runCatching {
@@ -322,6 +479,31 @@ fun MapScreen(nav: NavController) {
                     )
                 }
             }
+            // Показная дырка (location-cursor 3.2): только пиксели вокруг живого
+            // фикса, в БД не пишется. Добавляется даже при overBudget (+1 дырка
+            // дешева, а якорь «где я» нужен именно в плотной застройке).
+            // Правила зумов — внутри liveHoles (ниже 11 — пусто, видна точка).
+            val live = liveLatLon
+            if (live != null) {
+                val win = mapView.mapWindow
+                for (h in FogMask.liveHoles(live.first, live.second, camZoom)) {
+                    val (tl, br) = FogMask.holeBounds(h)
+                    val s1 = runCatching { win.worldToScreen(Point(tl.first, tl.second)) }.getOrNull()
+                    val s2 = runCatching { win.worldToScreen(Point(br.first, br.second)) }.getOrNull()
+                    if (s1 == null || s2 == null) {
+                        nullProj++
+                        continue
+                    }
+                    out.add(
+                        FogMask.ensureMinPx(
+                            HolePx(
+                                minOf(s1.x, s2.x), minOf(s1.y, s2.y),
+                                maxOf(s1.x, s2.x), maxOf(s1.y, s2.y)
+                            )
+                        )
+                    )
+                }
+            }
             // ВРЕМЕННОЕ (dev-logging): агрегат 2 сек + W при кадре > 500мс/overBudget.
             // Покадровый Log.d удален (2.3): при пане был шторм строк с format().
             val t1 = System.nanoTime()
@@ -339,9 +521,6 @@ fun MapScreen(nav: NavController) {
             }
             out
         }
-        // Компас виден при отклонении от севера > 10° (azimuth 0..360).
-        val northOff = minOf(camAzimuth, 360f - camAzimuth).let { abs(it) }
-        val showCompass = northOff > 10f
         Box(Modifier.fillMaxSize().padding(pad)) {
             AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
             // Маска поверх карты (личная сборка: MAY перекрывать логотип).
@@ -369,58 +548,13 @@ fun MapScreen(nav: NavController) {
                     )
                 }
             }
-            // Правая колонка: компас + зум + «Где я» (4.2–4.3).
+            // Правая колонка: зум + «Где я» (remove-map-rotation: компаса нет,
+            // север всегда сверху).
             Column(
                 Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 64.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                if (showCompass) {
-                    FloatingActionButton(
-                        onClick = {
-                            // ВРЕМЕННОЕ (dev-logging): нажатие компаса.
-                            DevLog.d("UI", "tap", mapOf("target" to "compass_reset"))
-                            runCatching {
-                                val pos = mapView.mapWindow.map.cameraPosition
-                                mapView.mapWindow.map.move(
-                                    CameraPosition(pos.target, pos.zoom, 0f, 0f),
-                                    Animation(Animation.Type.SMOOTH, 0.5f), null
-                                )
-                                // ВРЕМЕННОЕ (dev-logging): исходящее программное движение.
-                                runCatching { DevCameraStats.onMove() }
-                            }
-                        }
-                    ) {
-                        // Стрелка-компас в стиле Яндекс Карт: красная северная
-                        // половина, серая южная, поворот за картой.
-                        Canvas(Modifier.size(24.dp)) {
-                            rotate(-camAzimuth) {
-                                val c = center
-                                val r = size.minDimension / 2f
-                                val w = r * 0.38f
-                                drawPath(
-                                    Path().apply {
-                                        moveTo(c.x, c.y - r)
-                                        lineTo(c.x + w, c.y)
-                                        lineTo(c.x - w, c.y)
-                                        close()
-                                    },
-                                    Color(0xFFE53935)
-                                )
-                                drawPath(
-                                    Path().apply {
-                                        moveTo(c.x, c.y + r)
-                                        lineTo(c.x + w, c.y)
-                                        lineTo(c.x - w, c.y)
-                                        close()
-                                    },
-                                    Color(0xFFB0BEC5)
-                                )
-                                drawCircle(Color.White, radius = r * 0.14f, center = c)
-                            }
-                        }
-                    }
-                }
                 Surface(
                     shape = MaterialTheme.shapes.small,
                     color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)
@@ -434,7 +568,12 @@ fun MapScreen(nav: NavController) {
                 FloatingActionButton(onClick = {
                     // ВРЕМЕННОЕ (dev-logging): нажатие «Где я».
                     DevLog.d("UI", "tap", mapOf("target" to "my_location"))
-                    moveToMyLocation(16f)
+                    // Follow (location-cursor 4.1): возврат сразу без таймера.
+                    // Точка слоя первична, Fused — fallback пока слоя нет.
+                    resumeJob?.cancel()
+                    followActive = true
+                    if (liveLatLon != null) moveToLive(camZoom)
+                    else moveToMyLocation(16f)
                 }) {
                     Icon(Icons.Filled.MyLocation, contentDescription = "Где я")
                 }

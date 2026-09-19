@@ -29,6 +29,10 @@ class PendingGateTest {
         val o2 = pt(12, 53.9 + 0.00001, 16000L)
         val res = PendingGate.adjudicate(listOf(e, o1, o2), o, o2)
         assertEquals(listOf(10L), res.vetoed.map { it.id })
+        assertEquals(
+            ru.fogmap.data.FogRepository.VETO_RETURN,
+            res.vetoedReasons[10L]
+        )
         assertTrue(res.confirmed.isEmpty())
     }
 
@@ -53,6 +57,10 @@ class PendingGateTest {
         val n2 = pt(12, 53.9 + 0.0001, 1_208_000L)
         val res = PendingGate.adjudicate(listOf(old, n1, n2), o, n2)
         assertEquals(listOf(10L), res.vetoed.map { it.id })
+        assertEquals(
+            ru.fogmap.data.FogRepository.VETO_STALE,
+            res.vetoedReasons[10L]
+        )
     }
 
     @Test

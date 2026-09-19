@@ -33,7 +33,10 @@ object FogMask {
     /** Ниже — только крупные пятна (обзор города целиком). */
     const val FAR_ZOOM = 11f
 
-    /** Бюджет дырок: перебор = глухая вуаль без дырок (fail-closed). */
+    /**
+     * Бюджет дырок: перебор точных дырок = fallback на пятна присутствия,
+     * перебор и пятен = глухая вуаль без дырок (fail-closed).
+     */
     const val MAX_HOLES = 800
 
     /** Широкое мягкое перо (1.3: принято 14px) и скругление (принято 6px). */
@@ -89,6 +92,10 @@ object FogMask {
      * средний зум — пятна [MID_PRESENCE_Z], обзор города — [FAR_PRESENCE_Z].
      * Лестница вместо одного порога: иначе пятно z14 выглядит гигантским
      * рядом с точной ниткой (поп на границе 13). Склейка — [FogRects.merge].
+     *
+     * Перебор точных дырок (> [MAX_HOLES]) откатывается на пятна
+     * [MID_PRESENCE_Z] по тому же срезу viewport (без скалы 800 -> 0);
+     * перебор и пятен возвращается как есть — слой рисует глухую вуаль.
      */
     fun holesForZoom(cells: Set<Cell>, zoom: Float, region: RegionBox? = null): List<Hole> {
         if (cells.isEmpty()) return emptyList()
@@ -99,6 +106,32 @@ object FogMask {
         val byLevel = visible.groupBy { it.z }
         val out = ArrayList<Hole>()
         for ((z, levelCells) in byLevel) {
+            for (r in FogRects.merge(levelCells.toSet())) {
+                out.add(Hole(z, r))
+                if (out.size > MAX_HOLES) return fallbackHoles(visible)
+            }
+        }
+        return out
+    }
+
+    /**
+     * Fallback при переборе точных дырок: пятна [MID_PRESENCE_Z] по тому же
+     * срезу viewport. Клетки грубее [MID_PRESENCE_Z] (родители компакшна
+     * z14–z15, у которых нет предка z16) рисуются как есть своим уровнем —
+     * иначе [FogGrid.ancestorAt] бросил бы require. Перебор и здесь
+     * возвращается как есть для глухой вуали вторым уровнем защиты.
+     */
+    private fun fallbackHoles(visible: Set<Cell>): List<Hole> {
+        val fine = visible.filterTo(HashSet()) { it.z >= MID_PRESENCE_Z }
+        val coarseByLevel = visible.filter { it.z < MID_PRESENCE_Z }.groupBy { it.z }
+        val out = ArrayList<Hole>()
+        if (fine.isNotEmpty()) {
+            for (h in presenceHoles(fine, MID_PRESENCE_Z)) {
+                out.add(h)
+                if (out.size > MAX_HOLES) return out
+            }
+        }
+        for ((z, levelCells) in coarseByLevel) {
             for (r in FogRects.merge(levelCells.toSet())) {
                 out.add(Hole(z, r))
                 if (out.size > MAX_HOLES) return out
@@ -113,13 +146,34 @@ object FogMask {
         return FogRects.merge(presence).map { Hole(z, it) }
     }
 
-    /** Перебор бюджета = глухая вуаль (проверяется слоем перед рисованием). */
+    /**
+     * Перебор бюджета (проверяется слоем перед рисованием): true = пятен
+     * тоже слишком много, рисовать глухую вуаль. После fallback true
+     * означает именно этот случай, а не перебор точных дырок.
+     */
     fun overBudget(holes: List<Hole>): Boolean = holes.size > MAX_HOLES
 
     /** Углы дырки в координатах (для проекции слоем). */
     fun holeBounds(h: Hole): Pair<Pair<Double, Double>, Pair<Double, Double>> =
         FogGrid.cellTopLeft(h.rect.x0, h.rect.y0, h.z) to
             FogGrid.cellBottomRight(h.rect.x1, h.rect.y1, h.z)
+
+    /**
+     * Живая дырка-предпросмотр вокруг текущего фикса (location-cursor).
+     * Только показ: в БД, площадь и счетчики не попадает, вызывается слоем
+     * из `MapScreen` и добавляется к дыркам из памяти перед проекцией.
+     * Размер — пешая кисть ([FogGrid.RADIUS_WALK_M]), как потом реально
+     * откроется подтверждением: переход без хлопка. Лестница зумов та же:
+     * >= [DETAIL_ZOOM] — точная, 11–13 — пятно [MID_PRESENCE_Z],
+     * ниже [FAR_ZOOM] — пусто (видна только точка).
+     */
+    fun liveHoles(lat: Double, lon: Double, zoom: Float): List<Hole> {
+        if (zoom < FAR_ZOOM) return emptyList()
+        val cells = FogGrid.cellsAround(lat, lon, null)
+        if (cells.isEmpty()) return emptyList()
+        if (zoom < DETAIL_ZOOM) return presenceHoles(cells, MID_PRESENCE_Z)
+        return FogRects.merge(cells).map { Hole(FogGrid.BASE_Z, it) }
+    }
 
     /** Растянуть дырку до минимума [MIN_HOLE_PX] вокруг центра. */
     fun ensureMinPx(h: HolePx, min: Float = MIN_HOLE_PX): HolePx {

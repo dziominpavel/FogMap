@@ -32,8 +32,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.datastore.preferences.core.preferencesOf
+import androidx.compose.foundation.layout.Row
+import androidx.compose.runtime.LaunchedEffect
 import androidx.navigation.NavController
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import ru.fogmap.BuildConfig
 import ru.fogmap.FogMapApp
 import ru.fogmap.data.ThemeModes
@@ -146,6 +150,8 @@ fun SettingsScreen(nav: NavController) {
             }
             // --- Данные / опасная зона ---
             Text("Данные", style = MaterialTheme.typography.titleMedium)
+            // --- Сырой лог трек-дебага (track-debug 4.1) ---
+            RawStorageCard()
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
                     Text(
@@ -198,5 +204,71 @@ fun SettingsScreen(nav: NavController) {
             dismissButton = { TextButton(onClick = { confirmReset = false }) { Text("Отмена") } },
             text = { Text("Удалятся ячейки тумана, треки и статистика. Продолжить?") }
         )
+    }
+}
+
+/**
+ * Хранилище сырого лога (track-debug 4.1): список по дням с размером и
+ * чисткой. Чистка сносит только raw_fixes — туман, треки и статистика
+ * остаются, пропадает только возможность экспорта и переноса.
+ */
+@Composable
+private fun RawStorageCard() {
+    val context = LocalContext.current
+    val app = context.applicationContext as FogMapApp
+    val scope = rememberCoroutineScope()
+    var days by remember { mutableStateOf<List<Pair<String, Long>>>(emptyList()) }
+    var status by remember { mutableStateOf("") }
+    suspend fun reload() {
+        val list = withContext(Dispatchers.IO) {
+            app.container.db.rawFixDao().days().map { it to app.container.db.rawFixDao().countOf(it) }
+        }
+        days = list
+    }
+    LaunchedEffect(Unit) { runCatching { reload() } }
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Сырой лог треков", style = MaterialTheme.typography.bodyLarge)
+            Text(
+                "Каждый fix с вердиктом, бессрочно. Чистка удаляет только сыряк: " +
+                    "туман, треки и статистика остаются, но пропадет возможность " +
+                    "экспорта и переноса на другое устройство.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            if (days.isEmpty()) {
+                Text("Сырых логов нет", style = MaterialTheme.typography.bodyMedium)
+            } else {
+                for ((day, count) in days) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "$day · $count тчк · ≈${(count * 160) / 1024} КБ",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = {
+                            scope.launch {
+                                withContext(Dispatchers.IO) {
+                                    app.container.db.rawFixDao().deleteDay(day)
+                                }
+                                status = "Удален сыряк за $day"
+                                runCatching { reload() }
+                            }
+                        }) { Text("Удалить") }
+                    }
+                }
+                OutlinedButton(onClick = {
+                    scope.launch {
+                        withContext(Dispatchers.IO) { app.container.db.rawFixDao().clearAll() }
+                        status = "Весь сыряк очищен"
+                        runCatching { reload() }
+                    }
+                }) { Text("Очистить всё") }
+            }
+            if (status.isNotEmpty()) Text(status, style = MaterialTheme.typography.bodySmall)
+        }
     }
 }

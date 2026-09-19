@@ -48,7 +48,11 @@ class FogRepository(private val db: AppDatabase) {
 
     data class BatchResult(val newCells: Int, val distanceM: Double)
 
-    suspend fun appendPoints(trackId: Long, points: List<RawPoint>): BatchResult {
+    suspend fun appendPoints(
+        trackId: Long,
+        points: List<RawPoint>,
+        date: LocalDate = LocalDate.now()
+    ): BatchResult {
         if (points.isEmpty()) return BatchResult(0, 0.0)
         var newBase = 0
         var distance = 0.0
@@ -81,7 +85,7 @@ class FogRepository(private val db: AppDatabase) {
             val counters = db.counterDao()
             val distCm = (distance * 100).toLong()
             val timeS = if (points.size > 1) (points.last().time - points.first().time) / 1000 else 0
-            for (suffix in rangeSuffixes()) {
+            for (suffix in rangeSuffixesFor(date)) {
                 if (newBase > 0) counters.addOrInsert("area_cells_$suffix", newBase.toLong())
                 if (distCm > 0) counters.addOrInsert("distance_cm_$suffix", distCm)
                 if (timeS > 0) counters.addOrInsert("time_s_$suffix", timeS)
@@ -109,7 +113,11 @@ class FogRepository(private val db: AppDatabase) {
             newest = PendingGate.Item(-1, newest.lat, newest.lon, newest.time)
         )
         if (res.vetoed.isNotEmpty()) {
-            db.trackDao().markClosed(res.vetoed.map { it.id })
+            // Аудит вето по причинам: возврат и протухание пишутся раздельно.
+            val byReason = res.vetoed.groupBy { res.vetoedReasons[it.id] ?: VETO_RETURN }
+            for ((reason, items) in byReason) {
+                db.trackDao().markClosedWithReason(items.map { it.id }, reason)
+            }
         }
         if (res.confirmed.isEmpty()) return 0
         // Подтвержденные — как сырые точки с открытым флагом + коридор от якоря.
@@ -129,11 +137,11 @@ class FogRepository(private val db: AppDatabase) {
      * `rejected_<reason>_<suffix>`, те же разрезы all/день/неделя. Вызывается из
      * flush даже когда принятых точек нет — иначе день в офисе снова невидим.
      */
-    suspend fun recordRejected(reasons: Map<String, Long>) {
+    suspend fun recordRejected(reasons: Map<String, Long>, date: LocalDate = LocalDate.now()) {
         if (reasons.isEmpty()) return
         db.withTransaction {
             val counters = db.counterDao()
-            for ((key, n) in rejectedKeys(reasons, rangeSuffixes())) {
+            for ((key, n) in rejectedKeys(reasons, rangeSuffixesFor(date))) {
                 counters.addOrInsert(key, n)
             }
         }
@@ -242,14 +250,23 @@ class FogRepository(private val db: AppDatabase) {
         const val REJECT_NO_FIX = "no-fix"
         /** Причина jump: выброс из последовательности (gps-trust-filter 2.2). */
         const val REJECT_JUMP = "jump"
+        /**
+         * Причины вето ворот C (track-fix 19.09, аудит): пишутся в rejectReason
+         * заветированной точки, счетчики rejected НЕ трогают (это не отброс
+         * фильтра, точка в треке остается). Без миграции: колонка уже есть.
+         */
+        const val VETO_RETURN = "veto_return"
+        const val VETO_STALE = "veto_stale"
         val REJECT_REASONS = listOf(
             REJECT_ACCURACY, REJECT_SPEED, REJECT_MOCK, REJECT_PAUSED, REJECT_NO_FIX,
             REJECT_JUMP
         )
 
         /** Разрезы счетчиков: all + день + неделя (единые для всех метрик). */
-        fun rangeSuffixes(): List<String> {
-            val date = LocalDate.now()
+        fun rangeSuffixes(): List<String> = rangeSuffixesFor(LocalDate.now())
+
+        /** Тот же набор разрезов для явной даты (track-debug: rebuild старых дней). */
+        fun rangeSuffixesFor(date: LocalDate): List<String> {
             val day = date.toString()
             val week = date.get(WeekFields.of(Locale.getDefault()).weekOfYear()).toString() +
                 "-" + date.year.toString()

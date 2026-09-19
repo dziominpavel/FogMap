@@ -30,14 +30,14 @@ class DevCameraStormTest {
         try {
             // Фаза 1: спокойный жест 2 события/сек — шторма нет, окно сбрасывается.
             val t1 = 1_000_000L
-            repeat(5) { i -> DevCameraStats.onEvent(15f, 0f, 0f, false, t1 + i * 500L) }
+            repeat(5) { i -> DevCameraStats.onEvent(15f, t1 + i * 500L) }
             val calmStorms = DevLog.snapshot().mapNotNull { DevLog.parse(it) }
                 .count { it.tag == "CAMERA" && it.msg == "storm" }
             assertEquals(0, calmStorms)
 
             // Фаза 2: 100 событий/сек — шторм обязан сработать до конца 2-секундного окна.
             val t2 = t1 + 100_000L
-            repeat(120) { i -> DevCameraStats.onEvent(18f, 68f, 50f, false, t2 + i * 10L) }
+            repeat(120) { i -> DevCameraStats.onEvent(18f, t2 + i * 10L) }
             val events = DevLog.snapshot().mapNotNull { DevLog.parse(it) }
             val storms = events.filter { it.tag == "CAMERA" && it.msg == "storm" }
             assertEquals(1, storms.size)
