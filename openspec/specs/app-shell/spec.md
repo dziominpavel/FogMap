@@ -91,7 +91,7 @@
 публикация в Play Store вне скоупа.
 Базовая версия SHALL храниться в файле `version` в корне репо и меняться только руками на milestone (старт — `1.0.0`).
 `versionCode` SHALL вычисляться как счетчик коммитов `git rev-list --count HEAD` и SHALL быть строго монотонным (каждая новая сборка с новым коммитом больше предыдущей; значение SHALL быть больше `2` для обновления поверх текущих установок).
-Имя выходного APK SHALL содержать полную версию (`FogMap-<fullVersion>-<release|debug>.apk`); копия `*-latest.apk` SHALL сохраняться как указатель «бери меня», версионированная копия SHALL уходить в `dist/archive/`.
+Имя архивной копии APK SHALL содержать полную версию (`dist/archive/FogMap-<fullVersion>-<release|debug>.apk`); копия `dist/FogMap-*-latest.apk` SHALL сохраняться как указатель «бери меня».
 Сборщик SHALL печатать полную версию и `versionCode` до установки и сверять версию пакета на устройстве после `adb install`.
 
 #### Scenario: Установка у друга
@@ -100,7 +100,7 @@
 
 #### Scenario: Версия видна в имени файла
 - **WHEN** сборка завершена
-- **THEN** в `dist/` лежит `FogMap-<fullVersion>-release.apk` и обновленный `FogMap-release-latest.apk`, а в `dist/archive/` — версионированная копия, по имени которой однозначно определяется билд
+- **THEN** в `dist/` лежит обновленный `FogMap-release-latest.apk`, а в `dist/archive/` — версионированная копия `FogMap-<fullVersion>-release.apk`, по имени которой однозначно определяется билд
 
 #### Scenario: Версия видна в момент установки
 - **WHEN** запущен `build-apk.bat install`

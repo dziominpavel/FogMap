@@ -7,10 +7,10 @@ rem              log capture via adb run-as; installs side-by-side with release,
 rem              data does NOT overlap. Debug is for investigation only,
 rem              not for everyday tracking.
 rem   install  - also installs the APK via adb (may follow the debug word)
-rem Result: dist\FogMap-<fullVersion>-release.apk + dist\FogMap-release-latest.apk
-rem (versioned history copies in dist\archive\). Full version comes from Gradle
+rem Result: dist\FogMap-release-latest.apk ("take this") + versioned history
+rem copy in dist\archive\. Full version comes from Gradle
 rem (file `version` + git count/sha, see app/build.gradle.kts), e.g.
-rem dist\FogMap-1.0.0.13-g06885fb-dirty-20260920-0026-release.apk
+rem dist\archive\FogMap-1.0.0.13-g06885fb-dirty-20260920-0026-release.apk
 rem ABI filtering is packaging-only: nothing is cut from the project,
 rem MapKit stays whole (-PtargetAbis passed to Gradle, see app/build.gradle.kts).
 rem Debug builds skip ABI filtering so they also work on the emulator (x86_64).
@@ -96,18 +96,15 @@ if not defined FULLVER (
   set "FULLVER=0.0.0-dev-!TS!"
   set "VERCODE=?"
 )
-set "VERSIONED=dist\FogMap-!FULLVER!-!TAGNAME!.apk"
 set "ARCHIVED=dist\archive\FogMap-!FULLVER!-!TAGNAME!.apk"
 set "LATEST=dist\FogMap-!TAGNAME!-latest.apk"
 
 copy /y "%SRC%" "%ARCHIVED%" >nul
-copy /y "%SRC%" "%VERSIONED%" >nul
 copy /y "%SRC%" "%LATEST%" >nul
 
 echo.
 echo [OK] Done: FogMap !FULLVER! (versionCode !VERCODE!)
 echo   TAKE THIS: %LATEST%  -- install it on the phone
-echo   (versioned copy: %VERSIONED%)
 echo   (history copy: %ARCHIVED%)
 echo.
 for %%F in ("%LATEST%") do echo   Size: %%~zF bytes
