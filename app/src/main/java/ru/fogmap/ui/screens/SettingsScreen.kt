@@ -56,8 +56,9 @@ fun SettingsScreen(nav: NavController) {
     val paused = prefs[ru.fogmap.data.PrefsKeys.PAUSED] ?: false
     // ВРЕМЕННОЕ (dev-logging): тумблер диагностики.
     val diagEnabled = prefs[ru.fogmap.data.PrefsKeys.DIAG_ENABLED] ?: true
+    // Полная версия (app-versioning): FULL_VERSION уже содержит базу + count + sha + dirty-метку.
     val version = remember {
-        runCatching {
+        BuildConfig.FULL_VERSION.takeIf { it.isNotBlank() } ?: runCatching {
             @Suppress("DEPRECATION")
             context.packageManager.getPackageInfo(context.packageName, 0).versionName
         }.getOrNull()?.takeIf { !it.isNullOrBlank() } ?: BuildConfig.VERSION_NAME.takeIf { !it.isNullOrBlank() } ?: "—"
@@ -179,6 +180,10 @@ fun SettingsScreen(nav: NavController) {
                     Text(
                         "Сборка: ${BuildConfig.BUILD_TIME}",
                         style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        "Билд ${BuildConfig.GIT_COUNT} · ${BuildConfig.GIT_SHA}",
+                        style = MaterialTheme.typography.bodySmall
                     )
                     Text(
                         "Трекер тумана войны. Все данные хранятся только на телефоне.",

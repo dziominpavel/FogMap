@@ -19,6 +19,35 @@ val mapkitApiKey: String =
 // Метка сборки для экрана «О программе» (видно когда собрано).
 val buildTime: String =
     LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+// Версионирование (app-versioning): база из файла `version` + данные git.
+// Без файла-счетчика: versionCode = git rev-list --count HEAD (минимум 3),
+// versionName = <base>.<count>-g<sha>[-dirty-<TS>]. Грязные сборки (есть
+// незакоммиченное) получают суффикс с меткой времени и отличимы глазом;
+// чистые воспроизводимы. FOGMAP_NO_GIT=1 принудительно включает фолбэк.
+fun gitOut(vararg args: String): String? {
+    if (!System.getenv("FOGMAP_NO_GIT").isNullOrBlank()) return null
+    return try {
+        val proc = ProcessBuilder("git", *args)
+            .directory(rootProject.projectDir)
+            .redirectErrorStream(true)
+            .start()
+        val out = proc.inputStream.bufferedReader().readText().trim()
+        if (proc.waitFor() == 0 && out.isNotEmpty()) out else null
+    } catch (_: Exception) {
+        null
+    }
+}
+val baseVersion: String =
+    rootProject.file("version").takeIf { it.exists() }?.readText()?.trim()
+        ?.takeIf { it.isNotEmpty() } ?: "0.0.0-dev"
+val gitCount: Int = gitOut("rev-list", "--count", "HEAD")?.toIntOrNull() ?: 0
+val gitSha: String = gitOut("rev-parse", "--short", "HEAD") ?: "unknown"
+val gitDirty: Boolean = gitOut("status", "--porcelain")?.isNotEmpty() ?: true
+val versionCodeInt: Int = maxOf(gitCount, 3)
+val dirtyTs: String =
+    if (gitDirty) LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmm")) else ""
+val fullVersion: String =
+    "$baseVersion.$gitCount-g$gitSha" + if (gitDirty) "-dirty-$dirtyTs" else ""
 // ABI для упаковки APK: задает build-apk.bat через -PtargetAbis (напр. "arm64-v8a,armeabi-v7a").
 // Без свойства — все ABI из зависимостей (нужно для debug на эмуляторе x86_64).
 // Это НЕ вырезание кода из проекта: MapKit остается целиком, выбирается лишь что класть в APK.
@@ -40,14 +69,18 @@ android {
         applicationId = "ru.fogmap"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.2.0-mvp"
+        versionCode = versionCodeInt
+        versionName = fullVersion
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
 
         buildConfigField("String", "MAPKIT_API_KEY", "\"$mapkitApiKey\"")
         buildConfigField("String", "BUILD_TIME", "\"$buildTime\"")
+        buildConfigField("String", "FULL_VERSION", "\"$fullVersion\"")
+        buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
+        buildConfigField("String", "GIT_COUNT", "\"$gitCount\"")
+        buildConfigField("String", "GIT_DIRTY", "\"$gitDirty\"")
     }
 
     if (hasReleaseKeystore) {
@@ -96,6 +129,14 @@ android {
     }
     kotlinOptions {
         jvmTarget = "17"
+    }
+}
+
+// Печать версии для build-apk.bat / CI (парсится по префиксам FULL_VERSION=, VERSION_CODE=).
+tasks.register("printFullVersion") {
+    doLast {
+        println("FULL_VERSION=$fullVersion")
+        println("VERSION_CODE=$versionCodeInt")
     }
 }
 

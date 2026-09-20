@@ -7,8 +7,10 @@ rem              log capture via adb run-as; installs side-by-side with release,
 rem              data does NOT overlap. Debug is for investigation only,
 rem              not for everyday tracking.
 rem   install  - also installs the APK via adb (may follow the debug word)
-rem Result: dist\FogMap-release-latest.apk or dist\FogMap-debug-latest.apk
-rem (history copies in dist\archive\).
+rem Result: dist\FogMap-<fullVersion>-release.apk + dist\FogMap-release-latest.apk
+rem (versioned history copies in dist\archive\). Full version comes from Gradle
+rem (file `version` + git count/sha, see app/build.gradle.kts), e.g.
+rem dist\FogMap-1.0.0.13-g06885fb-dirty-20260920-0026-release.apk
 rem ABI filtering is packaging-only: nothing is cut from the project,
 rem MapKit stays whole (-PtargetAbis passed to Gradle, see app/build.gradle.kts).
 rem Debug builds skip ABI filtering so they also work on the emulator (x86_64).
@@ -78,23 +80,41 @@ if not exist "%SRC%" (
 if not exist "dist" mkdir "dist"
 if not exist "dist\archive" mkdir "dist\archive"
 
-for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmm"') do set "TS=%%i"
-set "DATED=dist\archive\FogMap-!TAGNAME!-!TS!.apk"
+rem --- Full version: single source of truth is Gradle (file `version` + git) ---
+set "FULLVER="
+set "VERCODE="
+rem NOTE: no %EXTRA% here on purpose: -PtargetAbis contains a comma which
+rem splits the for /f command (gradle would see 'arm64-v8a' as a task).
+rem printFullVersion does not need ABI filtering anyway.
+for /f "tokens=1* delims==" %%A in ('call gradlew.bat -q :app:printFullVersion --console=plain "-Dorg.gradle.java.home=%JAVA_HOME%" 2^>nul') do (
+  if "%%A"=="FULL_VERSION" set "FULLVER=%%B"
+  if "%%A"=="VERSION_CODE" set "VERCODE=%%B"
+)
+if not defined FULLVER (
+  echo [WARN] Could not read version from Gradle, fallback to timestamp naming.
+  for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmm"') do set "TS=%%i"
+  set "FULLVER=0.0.0-dev-!TS!"
+  set "VERCODE=?"
+)
+set "VERSIONED=dist\FogMap-!FULLVER!-!TAGNAME!.apk"
+set "ARCHIVED=dist\archive\FogMap-!FULLVER!-!TAGNAME!.apk"
 set "LATEST=dist\FogMap-!TAGNAME!-latest.apk"
 
-copy /y "%SRC%" "%DATED%" >nul
+copy /y "%SRC%" "%ARCHIVED%" >nul
+copy /y "%SRC%" "%VERSIONED%" >nul
 copy /y "%SRC%" "%LATEST%" >nul
 
 echo.
-echo [OK] Done:
+echo [OK] Done: FogMap !FULLVER! (versionCode !VERCODE!)
 echo   TAKE THIS: %LATEST%  -- install it on the phone
-echo   (history copy: %DATED%)
+echo   (versioned copy: %VERSIONED%)
+echo   (history copy: %ARCHIVED%)
 echo.
 for %%F in ("%LATEST%") do echo   Size: %%~zF bytes
 
 if "%INSTALL%"=="1" (
   echo.
-  echo === Installing on device ===
+  echo === Installing FogMap !FULLVER! (versionCode !VERCODE!) on device ===
   where adb >nul 2>&1
   if errorlevel 1 (
     echo [ERROR] adb not found in PATH. Open the project in Android Studio or add platform-tools to PATH.
@@ -107,7 +127,12 @@ if "%INSTALL%"=="1" (
     pause
     exit /b 1
   )
-  echo [OK] Installed.
+  echo [OK] Installed. Verifying version on device:
+  if "%MODE%"=="debug" (
+    adb shell dumpsys package ru.fogmap.dev | findstr /c:"versionName" /c:"versionCode"
+  ) else (
+    adb shell dumpsys package ru.fogmap | findstr /c:"versionName" /c:"versionCode"
+  )
 )
 
 echo.
