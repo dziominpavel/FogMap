@@ -112,6 +112,21 @@ class StatsRepository(private val db: AppDatabase) {
         return FogRepository.REJECT_REASONS.associateWith { c.get("rejected_${it}_$range") ?: 0 }
     }
 
+    /** Эко-метрики за период (battery-eco 1.3): fix/stand/gps_ms/flush/prefix. */
+    suspend fun ecoBreakdown(range: String): Map<String, Long> {
+        val c = db.counterDao()
+        return FogRepository.ECO_METRICS.associateWith { c.get("eco_${it}_$range") ?: 0 }
+    }
+
+    /** Средняя длина спрямления префикса в метрах (prefix_cm / prefix_n). */
+    suspend fun ecoPrefixAvgM(range: String): Double {
+        val c = db.counterDao()
+        val cm = c.get("eco_${FogRepository.ECO_PREFIX_CM}_$range") ?: 0
+        val n = c.get("eco_${FogRepository.ECO_PREFIX_N}_$range") ?: 0
+        if (n <= 0) return 0.0
+        return cm / 100.0 / n
+    }
+
     companion object {
         fun dayRange(date: LocalDate = LocalDate.now()): String = "day_$date"
     }

@@ -14,6 +14,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -32,6 +33,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import ru.fogmap.FogMapApp
+import ru.fogmap.data.PrefsKeys
 import ru.fogmap.diag.DevLog
 import ru.fogmap.ui.BottomBar
 
@@ -46,6 +48,11 @@ fun DiagDiagnosticsScreen(nav: NavController) {
     val scope = rememberCoroutineScope()
     val tail by DevLog.tail.collectAsState()
     var status by remember { mutableStateOf("") }
+    // Эко-режим (battery-eco 1.1): дев-переключалка base/eco, трек не сбрасывает.
+    val prefs by app.container.dataStore.data.collectAsState(
+        initial = androidx.datastore.preferences.core.preferencesOf()
+    )
+    val ecoMode = prefs[PrefsKeys.ECO_MODE] ?: false
 
     Scaffold(bottomBar = { BottomBar(nav, "settings") }) { pad ->
         Column(
@@ -94,6 +101,30 @@ fun DiagDiagnosticsScreen(nav: NavController) {
                 TextButton(onClick = { nav.popBackStack() }) { Text("Назад") }
             }
             if (status.isNotEmpty()) Text(status, style = MaterialTheme.typography.bodyMedium)
+            Card(Modifier.fillMaxWidth()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Эко-режим (base/eco)", style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            if (ecoMode) "eco: STANDBY/BURST активны"
+                            else "base: плотный HIGH как раньше",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                    Switch(
+                        checked = ecoMode,
+                        onCheckedChange = { v ->
+                            scope.launch {
+                                app.container.settingsRepository.setEcoMode(v)
+                                status = if (v) "Эко включен" else "Эко выключен (base)"
+                            }
+                        }
+                    )
+                }
+            }
             Text(
                 "Хвост ${tail.size} событий, сессия ${DevLog.session}",
                 style = MaterialTheme.typography.titleSmall

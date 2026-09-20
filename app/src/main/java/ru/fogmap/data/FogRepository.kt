@@ -147,6 +147,21 @@ class FogRepository(private val db: AppDatabase) {
         }
     }
 
+    /**
+     * Эко-метрики (battery-eco 1.3): материализованные счетчики `eco_<metric>_<suffix>`
+     * в тех же разрезах all/день/неделя. Пишутся из flush пачкой вместе с rejected,
+     * поэтому в STAND-дни растут даже при 0 точек в БД.
+     */
+    suspend fun recordEco(metrics: Map<String, Long>, date: LocalDate = LocalDate.now()) {
+        if (metrics.isEmpty()) return
+        db.withTransaction {
+            val counters = db.counterDao()
+            for ((key, n) in ecoKeys(metrics, rangeSuffixesFor(date))) {
+                counters.addOrInsert(key, n)
+            }
+        }
+    }
+
     suspend fun cellCount(): Long = db.fogDao().cellCount()
 
     /** Ячейки уровня [z] в диапазоне — чтение пирамиды для рендера. */
@@ -262,6 +277,17 @@ class FogRepository(private val db: AppDatabase) {
             REJECT_JUMP
         )
 
+        /** Эко-метрики (battery-eco 1.3): ключи без суффикса разреза. */
+        const val ECO_FIX = "fix"
+        const val ECO_STAND = "stand"
+        const val ECO_GPS_MS = "gps_ms"
+        const val ECO_FLUSH = "flush"
+        const val ECO_PREFIX_CM = "prefix_cm"
+        const val ECO_PREFIX_N = "prefix_n"
+        val ECO_METRICS = listOf(
+            ECO_FIX, ECO_STAND, ECO_GPS_MS, ECO_FLUSH, ECO_PREFIX_CM, ECO_PREFIX_N
+        )
+
         /** Разрезы счетчиков: all + день + неделя (единые для всех метрик). */
         fun rangeSuffixes(): List<String> = rangeSuffixesFor(LocalDate.now())
 
@@ -344,6 +370,23 @@ class FogRepository(private val db: AppDatabase) {
             for (s in suffixes) {
                 for ((reason, n) in reasons) {
                     if (n > 0) out.add("rejected_${reason}_$s" to n)
+                }
+            }
+            return out
+        }
+
+        /**
+         * Чистые ключи эко-метрик (battery-eco 1.3): схема `eco_<metric>_<suffix>`,
+         * нули отсекаются как у rejected. Тестируется без БД.
+         */
+        fun ecoKeys(
+            metrics: Map<String, Long>,
+            suffixes: List<String>
+        ): List<Pair<String, Long>> {
+            val out = ArrayList<Pair<String, Long>>(metrics.size * suffixes.size)
+            for (s in suffixes) {
+                for ((metric, n) in metrics) {
+                    if (n > 0) out.add("eco_${metric}_$s" to n)
                 }
             }
             return out

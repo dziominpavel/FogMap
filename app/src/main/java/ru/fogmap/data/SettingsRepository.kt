@@ -16,6 +16,10 @@ object PrefsKeys {
     val THEME_MODE = stringPreferencesKey("theme_mode")
     /** ВРЕМЕННОЕ (dev-logging): вкл/выкл диагностики, default true до стабилизации. */
     val DIAG_ENABLED = booleanPreferencesKey("diag_enabled")
+    /** Эко-режим трекинга (battery-eco 1.1): дев-переключалка base/eco, default base. */
+    val ECO_MODE = booleanPreferencesKey("eco_mode")
+    /** Последний эко-профиль (battery-eco 2.4): ACTIVE/STANDBY/BURST для рестарта. */
+    val ECO_PROFILE = stringPreferencesKey("eco_profile")
 }
 
 object ThemeModes {
@@ -23,6 +27,13 @@ object ThemeModes {
     const val LIGHT = "light"
     const val SYSTEM = "system"
     const val DEFAULT = DARK
+}
+
+/** Эко-профили опроса (battery-eco 2.1): имена для DataStore и логов. */
+object EcoProfiles {
+    const val ACTIVE = "ACTIVE"
+    const val STANDBY = "STANDBY"
+    const val BURST = "BURST"
 }
 
 class SettingsRepository(
@@ -35,6 +46,11 @@ class SettingsRepository(
         store.data.map { it[PrefsKeys.THEME_MODE] ?: ThemeModes.DEFAULT }
     /** ВРЕМЕННОЕ (dev-logging). */
     val diagEnabled: Flow<Boolean> = store.data.map { it[PrefsKeys.DIAG_ENABLED] ?: true }
+    /** Эко-режим (battery-eco 1.1): false = base, true = eco. */
+    val ecoMode: Flow<Boolean> = store.data.map { it[PrefsKeys.ECO_MODE] ?: false }
+    /** Последний эко-профиль (battery-eco 2.4). */
+    val ecoProfile: Flow<String> =
+        store.data.map { it[PrefsKeys.ECO_PROFILE] ?: EcoProfiles.ACTIVE }
 
     suspend fun setPaused(v: Boolean) { store.edit { it[PrefsKeys.PAUSED] = v } }
     suspend fun setOnboardingDone() { store.edit { it[PrefsKeys.ONBOARDING_DONE] = true } }
@@ -45,6 +61,15 @@ class SettingsRepository(
 
     /** ВРЕМЕННОЕ (dev-logging). */
     suspend fun setDiagEnabled(v: Boolean) { store.edit { it[PrefsKeys.DIAG_ENABLED] = v } }
+
+    /** Эко-режим (battery-eco 1.1): дев-переключалка, трек не сбрасывает. */
+    suspend fun setEcoMode(v: Boolean) { store.edit { it[PrefsKeys.ECO_MODE] = v } }
+
+    /** Последний эко-профиль (battery-eco 2.4). */
+    suspend fun setEcoProfile(v: String) {
+        require(v in setOf(EcoProfiles.ACTIVE, EcoProfiles.STANDBY, EcoProfiles.BURST))
+        store.edit { it[PrefsKeys.ECO_PROFILE] = v }
+    }
 
     suspend fun resetAll(fog: FogRepository) = fog.clearAll()
 }

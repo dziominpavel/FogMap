@@ -20,7 +20,6 @@ import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
-import com.google.android.gms.location.Priority
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -57,6 +56,27 @@ class TrackingService : LifecycleService() {
     /** Кэш флага паузы (gps-trust-filter): вердикт и запись — синхронно в колбэке. */
     @Volatile
     private var pausedCached: Boolean = false
+    /** Эко-режим (battery-eco 1.1): false = base (поведение как раньше). */
+    @Volatile
+    private var ecoCached: Boolean = false
+    /** Текущий эко-профиль опроса (battery-eco 2.1). */
+    @Volatile
+    private var ecoProfile: EcoGovernor.Profile = EcoGovernor.Profile.ACTIVE
+    /** Серия подряд STAND для входа в STANDBY (battery-eco 2.2). */
+    private var standStreak: Int = 0
+    /** Якорь STANDBY для дистанционного пробуждения (battery-eco 2.2). */
+    private var standbyAnchorLat: Double? = null
+    private var standbyAnchorLon: Double? = null
+    /** Дедлайн BURST-окна и последний ресаб (battery-eco 2.3/2.5). */
+    private var burstDeadlineMs: Long = 0L
+    private var lastResubMs: Long = 0L
+    private var lastStandbyEnterMs: Long = 0L
+    /** Эко-счетчики текущей пачки (battery-eco 1.3): сливаются во flush. */
+    private var ecoFixCount: Long = 0L
+    private var ecoStandCount: Long = 0L
+    private var ecoRawSample: Long = 0L
+    /** GPS-время профиля с прошлого flush (battery-eco 1.3). */
+    private var lastFlushWallMs: Long = System.currentTimeMillis()
     /** Состояние движка доверия + окно истории записанных точек. */
     private var trustPrev: TrustEngine.PrevState? = null
     private val trustHistory = ArrayDeque<TrustEngine.HistPoint>()
@@ -83,16 +103,27 @@ class TrackingService : LifecycleService() {
             return
         }
         // ВРЕМЕННОЕ (dev-logging): старт сервиса.
-        DevLog.i("TRACK", "service_start")
+        DevLog.i("TRACK", "service_start", mapOf("mode" to ecoModeTag()))
         lifecycleScope.launch {
             val container = (application as FogMapApp).container
             // Подписка на паузу: при включенной паузе точки не пишем.
             // Флаг дублируется в pausedCached, чтобы onRawLocation оставался
             // синхронным (вердикт + запись без гонок между колбэками).
+            // Эко-флаг — рядом: base ведет себя как раньше, eco включает
+            // губернатор STANDBY/BURST (battery-eco 1.1/2.4).
             launch {
                 container.dataStore.data.collect { prefs ->
                     val paused = prefs[PrefsKeys.PAUSED] ?: false
                     pausedCached = paused
+                    val eco = prefs[PrefsKeys.ECO_MODE] ?: false
+                    if (eco != ecoCached) {
+                        ecoCached = eco
+                        DevLog.i(
+                            "TRACK", "mode_changed",
+                            mapOf("mode" to ecoModeTag(), "profile" to ecoProfile.name)
+                        )
+                        if (!eco) enterProfile(EcoGovernor.Profile.ACTIVE, force = true)
+                    }
                     updateNotification(paused)
                 }
             }
@@ -101,9 +132,24 @@ class TrackingService : LifecycleService() {
             // строкой с нулями даже до первой движущейся точки.
             trackId = container.trackRepository.openDayChunk()
             chunkDate = java.time.LocalDate.now()
+            // Эко-профиль с прошлого запуска (battery-eco 2.4): base всегда ACTIVE.
+            runCatching {
+                val saved = container.dataStore.data.first()[PrefsKeys.ECO_PROFILE]
+                val ecoNow = container.dataStore.data.first()[PrefsKeys.ECO_MODE] ?: false
+                ecoCached = ecoNow
+                ecoProfile = if (!ecoNow) EcoGovernor.Profile.ACTIVE
+                else EcoGovernor.fromName(saved)
+                if (ecoProfile == EcoGovernor.Profile.BURST) {
+                    ecoProfile = EcoGovernor.Profile.ACTIVE
+                }
+            }
+            lastFlushWallMs = System.currentTimeMillis()
             // ВРЕМЕННОЕ (dev-logging): чанк старта (только id, без координат).
-            DevLog.i("TRACK", "day_chunk", mapOf("track_id" to trackId))
-            subscribeFused()
+            DevLog.i(
+                "TRACK", "day_chunk",
+                mapOf("track_id" to trackId, "mode" to ecoModeTag(), "profile" to ecoProfile.name)
+            )
+            subscribeFused(ecoProfile)
             flushJob = launch {
                 while (true) {
                     delay(FLUSH_INTERVAL_MS)
@@ -128,6 +174,7 @@ class TrackingService : LifecycleService() {
         if (reason != LocationFilter.Reason.OK) {
             synchronized(buffer) {
                 rejected[reason.key] = (rejected[reason.key] ?: 0) + 1
+                ecoFixCount += 1
                 // Черный ящик: отброс фильтра сохраняется с координатами.
                 rawBuffer.add(
                     rawOf(
@@ -150,6 +197,7 @@ class TrackingService : LifecycleService() {
             if (pausedCached) {
                 rejected[FogRepository.REJECT_PAUSED] =
                     (rejected[FogRepository.REJECT_PAUSED] ?: 0) + 1
+                ecoFixCount += 1
                 rawBuffer.add(
                     rawOf(
                         loc = loc, accOrDef = accOrDef, speedOrNull = speedOrNull,
@@ -167,6 +215,8 @@ class TrackingService : LifecycleService() {
             verdict.countReject?.let { key ->
                 rejected[key] = (rejected[key] ?: 0) + 1
             }
+            ecoFixCount += 1
+            if (verdict.state == TrustEngine.State.STAND) ecoStandCount += 1
             // Сброс окна после существенного трогания (track-fix 19.09):
             // стояночные нули выкидываются, но последний кадр остается
             // якорем непрерывности (иначе медиане не из чего считаться).
@@ -178,22 +228,34 @@ class TrackingService : LifecycleService() {
             trustHistory.addLast(hp)
             while (trustHistory.size > TrustEngine.HISTORY_MAX) trustHistory.removeFirst()
             // Черный ящик: вердикт пишется всегда, включая STAND.
-            rawBuffer.add(
-                rawOf(
-                    loc = loc, accOrDef = accOrDef, speedOrNull = speedOrNull,
-                    isMock = isMock, filter = LocationFilter.Reason.OK.key,
-                    state = verdict.state.name, trust = verdict.trust,
-                    openFog = if (verdict.openFog) 1 else 0,
-                    rejectReason = verdict.countReject,
-                    history = historySnap, prev = prevSnap
+            // В STANDBY семплируем сыряк 1/6 (battery-eco 2.5), иначе раздуваем БД.
+            val wantRaw = !ecoCached || ecoProfile != EcoGovernor.Profile.STANDBY ||
+                (ecoRawSample++ % 6L == 0L)
+            if (wantRaw) {
+                rawBuffer.add(
+                    rawOf(
+                        loc = loc, accOrDef = accOrDef, speedOrNull = speedOrNull,
+                        isMock = isMock, filter = LocationFilter.Reason.OK.key,
+                        state = verdict.state.name, trust = verdict.trust,
+                        openFog = if (verdict.openFog) 1 else 0,
+                        rejectReason = verdict.countReject,
+                        history = historySnap, prev = prevSnap
+                    )
                 )
-            )
+            }
+            // Эко-губернатор (battery-eco 2.2/2.3): решение о профиле — после
+            // вердикта, сам переход — вне synchronized (там переподписка).
+            val target = ecoTargetAfterVerdict(verdict, loc)
             // День-атом (day-track-history D2): статика (STAND — стою, открывать
             // нечего) в БД не пишется вообще: ни точки, ни rejected. Движок
             // доверия при этом шагает как раньше (история в памяти нужна,
             // иначе холодный старт никогда не выйдет из STAND); прыжки
             // (SUSPECT/jump) и движение пишутся как раньше.
             if (verdict.state == TrustEngine.State.STAND) {
+                if (target != null && target.profile != ecoProfile) {
+                    val t = target
+                    lifecycleScope.launch { enterProfile(t.profile, wakeM = t.wakeM, verdict = t.verdict) }
+                }
                 return
             }
             // Раздельные ворота (spec tracking): точка пишется всегда
@@ -206,6 +268,10 @@ class TrackingService : LifecycleService() {
                     state = verdict.state.name, rejectReason = verdict.countReject
                 )
             )
+            if (target != null && target.profile != ecoProfile) {
+                val t = target
+                lifecycleScope.launch { enterProfile(t.profile, wakeM = t.wakeM, verdict = t.verdict) }
+            }
             if (buffer.size >= FLUSH_SIZE) lifecycleScope.launch { flush() }
         }
     }
@@ -246,11 +312,35 @@ class TrackingService : LifecycleService() {
                 chunkDate = today
             }
         }
-        // suspend-вызовы — строго вне synchronized (иначе critical section).
-        val starved: Boolean = synchronized(buffer) {
-            buffer.isEmpty() && rejected.isEmpty() && rawBuffer.isEmpty()
+        // BURST-таймаут без новых фиксов (battery-eco 2.3): тихий возврат в сон.
+        if (ecoCached && ecoProfile == EcoGovernor.Profile.BURST &&
+            System.currentTimeMillis() > burstDeadlineMs && burstDeadlineMs > 0
+        ) {
+            enterProfile(EcoGovernor.Profile.STANDBY, verdict = "TIMEOUT")
         }
+        // GPS-время профиля с прошлого flush (battery-eco 1.3): весь интервал
+        // сервис держал текущий профиль подписки.
+        val nowWall = System.currentTimeMillis()
+        val gpsMs = (nowWall - lastFlushWallMs).coerceIn(0L, FLUSH_INTERVAL_MS * 2)
+        lastFlushWallMs = nowWall
+        // suspend-вызовы — строго вне synchronized (иначе critical section).
+        val ecoSnapshot: Map<String, Long> = synchronized(buffer) {
+            val m = HashMap<String, Long>()
+            if (ecoFixCount > 0) m[FogRepository.ECO_FIX] = ecoFixCount
+            if (ecoStandCount > 0) m[FogRepository.ECO_STAND] = ecoStandCount
+            // GPS-время пишем всегда, даже в STAND без точек — иначе
+            // 6 часов дома дадут 0 во всех метриках и A/B несравним.
+            m[FogRepository.ECO_GPS_MS] = gpsMs
+            ecoFixCount = 0
+            ecoStandCount = 0
+            m
+        }
+        val starved: Boolean = synchronized(buffer) {
+            buffer.isEmpty() && rejected.isEmpty() && rawBuffer.isEmpty() && ecoSnapshot.isEmpty()
+        }
+        // Эко-метрики сливаем даже в starved (иначе STAND-дни невидимы).
         if (starved) {
+            runCatching { container.fogRepository.recordEco(ecoSnapshot) }
             flushIfStarved()
             return
         }
@@ -274,6 +364,8 @@ class TrackingService : LifecycleService() {
         var newCells = 0
         val batchSize = batch.size
         val rejSize = rej.values.sum()
+        var prefixCm = 0L
+        var prefixN = 0L
         runCatching {
             // День уже гарантирован проверкой в начале flush (см. выше):
             // батч всегда пишется в строку текущей даты, без хвоста прошлого дня.
@@ -281,25 +373,58 @@ class TrackingService : LifecycleService() {
                 container.db.rawFixDao().insertAll(rawBatch)
             }
             if (batch.isNotEmpty()) {
+                val prev = container.db.trackDao().lastPoint(trackId)
                 newCells = container.fogRepository.appendPoints(trackId, batch).newCells
+                // Префикс спрямления (battery-eco 1.3): коридор prev -> first.
+                // prev уже в БД, first — первая точка батча: прямая вместо тропинки.
+                if (prev != null) {
+                    val f = batch.first()
+                    val d = FogRepository.haversineM(prev.lat, prev.lon, f.lat, f.lon)
+                    // Пишем только значимые разрывы после тишины/STATDBY,
+                    // межбатчевые 8-секундные шаги не шумят.
+                    val dtS = (f.time - prev.time) / 1000
+                    if (d >= 50.0 && dtS >= 60) {
+                        prefixCm = (d * 100).toLong()
+                        prefixN = 1L
+                    }
+                }
             }
             if (rej.isNotEmpty()) container.fogRepository.recordRejected(rej)
+            val ecoToWrite = HashMap<String, Long>(ecoSnapshot)
+            // Пробуждение БД (battery-eco 1.3): flush с реальной записью.
+            ecoToWrite[FogRepository.ECO_FLUSH] = 1L
+            if (prefixN > 0) {
+                ecoToWrite[FogRepository.ECO_PREFIX_CM] = prefixCm
+                ecoToWrite[FogRepository.ECO_PREFIX_N] = prefixN
+            }
+            container.fogRepository.recordEco(ecoToWrite)
         }
         val txnMs = (System.nanoTime() - t0) / 1e6
+        val mode = ecoModeTag()
+        val txnStr = String.format(Locale.US, "%.1f", txnMs)
+        // Эко-снимок пачки в лог (logging-gap 1.1): те же числа что в счетчики —
+        // один JSONL самодостаточен для сверки без доступа к БД.
+        val payloadFix = ecoSnapshot[FogRepository.ECO_FIX] ?: 0L
+        val payloadStand = ecoSnapshot[FogRepository.ECO_STAND] ?: 0L
+        val payloadGpsMs = ecoSnapshot[FogRepository.ECO_GPS_MS] ?: 0L
         if (txnMs > 500.0) {
             DevLog.w(
                 "TRACK", "slow_flush",
-                mapOf(
-                    "batch" to batchSize, "rejected" to rejSize,
-                    "txn_ms" to String.format(Locale.US, "%.1f", txnMs), "new_cells" to newCells
+                EcoLogPayload.flushPayload(
+                    batch = batchSize, rejected = rejSize,
+                    txnMs = txnStr, newCells = newCells,
+                    mode = mode, profile = ecoProfile.name,
+                    ecoFix = payloadFix, ecoStand = payloadStand, ecoGpsMs = payloadGpsMs
                 )
             )
         } else {
             DevLog.i(
                 "TRACK", "flush",
-                mapOf(
-                    "batch" to batchSize, "rejected" to rejSize,
-                    "txn_ms" to String.format(Locale.US, "%.1f", txnMs), "new_cells" to newCells
+                EcoLogPayload.flushPayload(
+                    batch = batchSize, rejected = rejSize,
+                    txnMs = txnStr, newCells = newCells,
+                    mode = mode, profile = ecoProfile.name,
+                    ecoFix = payloadFix, ecoStand = payloadStand, ecoGpsMs = payloadGpsMs
                 )
             )
         }
@@ -323,7 +448,10 @@ class TrackingService : LifecycleService() {
             container.fogRepository.recordRejected(mapOf(FogRepository.REJECT_NO_FIX to 1))
         }
         // ВРЕМЕННОЕ (dev-logging): тишина Fused.
-        DevLog.i("TRACK", "no_fix", mapOf("gap_ms" to NO_FIX_GAP_MS))
+        DevLog.i(
+            "TRACK", "no_fix",
+            mapOf("gap_ms" to NO_FIX_GAP_MS, "mode" to ecoModeTag(), "profile" to ecoProfile.name)
+        )
     }
 
     /**
@@ -338,12 +466,11 @@ class TrackingService : LifecycleService() {
         }
     }
 
-    private fun subscribeFused() {
-        val request = LocationRequest.Builder(
-            Priority.PRIORITY_HIGH_ACCURACY, 8_000
-        )
-            .setMinUpdateIntervalMillis(5_000)
-            .setMinUpdateDistanceMeters(15f)
+    private fun subscribeFused(profile: EcoGovernor.Profile = EcoGovernor.Profile.ACTIVE) {
+        val params = EcoGovernor.paramsFor(profile)
+        val request = LocationRequest.Builder(params.priority, params.intervalMs)
+            .setMinUpdateIntervalMillis(params.minIntervalMs)
+            .setMinUpdateDistanceMeters(params.distanceM)
             .setWaitForAccurateLocation(false)
             .build()
         try {
@@ -352,6 +479,137 @@ class TrackingService : LifecycleService() {
         } catch (_: SecurityException) {
             stopSelf()
         }
+    }
+
+    /** Переподписка на профиль (battery-eco 2.1/2.5): единая точка, шторм гасится. */
+    private fun resubscribe(profile: EcoGovernor.Profile) {
+        runCatching {
+            LocationServices.getFusedLocationProviderClient(this)
+                .removeLocationUpdates(callback)
+        }
+        subscribeFused(profile)
+        lastResubMs = System.currentTimeMillis()
+    }
+
+    private fun ecoModeTag(): String = if (ecoCached) "eco" else "base"
+
+    /**
+     * Решение губернатора после вердикта (battery-eco 2.2/2.3, вызывается
+     * внутри synchronized): возвращает цель с причиной (дистанция до якоря
+     * целым числом метров, вердикт) или null (без смены). Причина нужна
+     * для eco_state — один JSONL самодостаточен для сверки (logging-gap).
+     * Base всегда ACTIVE. Переподписка — снаружи, в lifecycleScope.
+     */
+    private data class EcoTarget(val profile: EcoGovernor.Profile, val wakeM: Long, val verdict: String)
+
+    private fun ecoTargetAfterVerdict(
+        verdict: TrustEngine.Verdict,
+        loc: Location
+    ): EcoTarget? {
+        if (!ecoCached) {
+            return if (ecoProfile != EcoGovernor.Profile.ACTIVE) {
+                EcoTarget(EcoGovernor.Profile.ACTIVE, EcoLogPayload.NO_ANCHOR_M, "MODE")
+            } else null
+        }
+        val now = System.currentTimeMillis()
+        return when (ecoProfile) {
+            EcoGovernor.Profile.ACTIVE -> {
+                if (verdict.state == TrustEngine.State.STAND) {
+                    standStreak += 1
+                    if (standStreak >= EcoGovernor.STAND_CONFIRM_STREAK &&
+                        now - lastStandbyEnterMs >= EcoGovernor.STANDBY_DEBOUNCE_MS
+                    ) {
+                        standbyAnchorLat = loc.latitude
+                        standbyAnchorLon = loc.longitude
+                        standStreak = 0
+                        EcoTarget(EcoGovernor.Profile.STANDBY, 0L, verdict.state.name)
+                    } else null
+                } else {
+                    standStreak = 0
+                    null
+                }
+            }
+            EcoGovernor.Profile.STANDBY -> {
+                val anchorLat = standbyAnchorLat
+                val anchorLon = standbyAnchorLon
+                if (anchorLat == null || anchorLon == null) {
+                    standbyAnchorLat = loc.latitude
+                    standbyAnchorLon = loc.longitude
+                    null
+                } else {
+                    val distM = FogRepository.haversineM(
+                        anchorLat, anchorLon, loc.latitude, loc.longitude
+                    ).toLong()
+                    if (EcoGovernor.isWakeSignal(anchorLat, anchorLon, loc.latitude, loc.longitude)) {
+                        burstDeadlineMs = now + EcoGovernor.BURST_WINDOW_MS
+                        EcoTarget(EcoGovernor.Profile.BURST, distM, verdict.state.name)
+                    } else {
+                        // Якорь не двигаем каждый фикс: иначе окно уедет вместе
+                        // с медленным пешеходом и никогда не сработает (тот же
+                        // принцип что и STATIC_RADIUS в TrustEngine).
+                        if (verdict.state == TrustEngine.State.MOVING) {
+                            burstDeadlineMs = now + EcoGovernor.BURST_WINDOW_MS
+                            EcoTarget(EcoGovernor.Profile.BURST, distM, verdict.state.name)
+                        } else null
+                    }
+                }
+            }
+            EcoGovernor.Profile.BURST -> {
+                if (verdict.state == TrustEngine.State.MOVING) {
+                    // Префикс фиксируется во flush по коридору prev->first,
+                    // здесь только переход (батарейка: без лишнего haversine).
+                    val anchorLat = standbyAnchorLat
+                    val anchorLon = standbyAnchorLon
+                    val distM = if (anchorLat != null && anchorLon != null) {
+                        FogRepository.haversineM(
+                            anchorLat, anchorLon, loc.latitude, loc.longitude
+                        ).toLong()
+                    } else EcoLogPayload.NO_ANCHOR_M
+                    EcoTarget(EcoGovernor.Profile.ACTIVE, distM, verdict.state.name)
+                } else if (now > burstDeadlineMs && burstDeadlineMs > 0) {
+                    standbyAnchorLat = loc.latitude
+                    standbyAnchorLon = loc.longitude
+                    EcoTarget(EcoGovernor.Profile.STANDBY, EcoLogPayload.NO_ANCHOR_M, verdict.state.name)
+                } else null
+            }
+        }
+    }
+
+    /** Вход в профиль: ресаб + персист + лог (battery-eco 2.4, вне critical section). */
+    private fun enterProfile(
+        profile: EcoGovernor.Profile,
+        force: Boolean = false,
+        wakeM: Long = EcoLogPayload.NO_ANCHOR_M,
+        verdict: String = "?"
+    ) {
+        if (!force) {
+            if (profile == ecoProfile) return
+            // Дебаунс шторма (battery-eco 2.5): чаще 10 сек не переподписываемся,
+            // кроме пробуждения STANDBY->BURST — оно обязано быть мгновенным.
+            val wake = ecoProfile == EcoGovernor.Profile.STANDBY && profile == EcoGovernor.Profile.BURST
+            if (!wake && System.currentTimeMillis() - lastResubMs < 10_000L) return
+        }
+        val from = ecoProfile
+        ecoProfile = profile
+        if (profile == EcoGovernor.Profile.STANDBY) lastStandbyEnterMs = System.currentTimeMillis()
+        if (profile == EcoGovernor.Profile.ACTIVE) standStreak = 0
+        resubscribe(profile)
+        val container = (application as? FogMapApp)?.container ?: return
+        lifecycleScope.launch {
+            runCatching {
+                container.settingsRepository.setEcoProfile(EcoGovernor.nameOf(profile))
+            }
+        }
+        DevLog.i(
+            "TRACK", "eco_state",
+            EcoLogPayload.ecoStatePayload(
+                mode = ecoModeTag(),
+                profile = profile.name,
+                fromProfile = from.name,
+                wakeM = wakeM,
+                verdict = verdict
+            )
+        )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -374,7 +632,7 @@ class TrackingService : LifecycleService() {
 
     override fun onDestroy() {
         // ВРЕМЕННОЕ (dev-logging): остановка сервиса.
-        DevLog.i("TRACK", "service_stop")
+        DevLog.i("TRACK", "service_stop", mapOf("mode" to ecoModeTag(), "profile" to ecoProfile.name))
         runCatching {
             LocationServices.getFusedLocationProviderClient(this)
                 .removeLocationUpdates(callback)

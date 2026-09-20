@@ -54,6 +54,7 @@ import com.yandex.mapkit.map.LineStyle
 import com.yandex.mapkit.mapview.MapView
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import ru.fogmap.FogMapApp
 import ru.fogmap.R
@@ -293,6 +294,10 @@ fun HistoryDetailScreen(nav: NavController, trackId: Long) {
     // из материализованных счетчиков + диагностика отбросов за тот же день.
     var dayAreaKm2 by remember { mutableStateOf<Double?>(null) }
     var dayRejected by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
+    // Эко-метрики дня (battery-eco 1.3/1.4): режим и медиана префикса.
+    var dayEco by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
+    var dayPrefixAvgM by remember { mutableStateOf(0.0) }
+    var ecoNow by remember { mutableStateOf(false) }
     val points = pointEnts.map { Point(it.lat, it.lon) }
     var renameOpen by remember { mutableStateOf(false) }
     var deleteOpen by remember { mutableStateOf(false) }
@@ -315,7 +320,12 @@ fun HistoryDetailScreen(nav: NavController, trackId: Long) {
                 val range = ru.fogmap.data.StatsRepository.dayRange(date)
                 dayAreaKm2 = app.container.statsRepository.stats(range).areaKm2
                 dayRejected = app.container.statsRepository.rejectedBreakdown(range)
+                dayEco = app.container.statsRepository.ecoBreakdown(range)
+                dayPrefixAvgM = app.container.statsRepository.ecoPrefixAvgM(range)
             }
+            ecoNow = runCatching {
+                app.container.settingsRepository.ecoMode.first()
+            }.getOrDefault(false)
         }
     }
     Scaffold { pad ->
@@ -369,6 +379,26 @@ fun HistoryDetailScreen(nav: NavController, trackId: Long) {
                                 "Дома — GPS чистый, отбросов нет",
                                 style = MaterialTheme.typography.bodySmall
                             )
+                        }
+                        // Эко-диагностика дня (battery-eco 1.4): режим + префикс.
+                        val ecoFix = dayEco["fix"] ?: 0
+                        val ecoStand = dayEco["stand"] ?: 0
+                        val ecoGpsMs = dayEco["gps_ms"] ?: 0
+                        if (ecoFix > 0 || ecoStand > 0) {
+                            Text(
+                                "Эко: фиксов $ecoFix, STAND $ecoStand, " +
+                                    "GPS ${"%.1f".format(ecoGpsMs / 3600000.0)} ч, " +
+                                    "префикс ${"%.0f".format(dayPrefixAvgM)} м " +
+                                    "(сейчас ${if (ecoNow) "eco" else "base"})",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            if (dayPrefixAvgM > 200.0) {
+                                Text(
+                                    "Префикс выше бюджета 200 м",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            }
                         }
                     }
                 }
