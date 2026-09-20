@@ -56,9 +56,9 @@ class TrackingService : LifecycleService() {
     /** Кэш флага паузы (gps-trust-filter): вердикт и запись — синхронно в колбэке. */
     @Volatile
     private var pausedCached: Boolean = false
-    /** Эко-режим (battery-eco 1.1): false = base (поведение как раньше). */
+    /** Эко-режим (eco-always-on): всегда включен, флага и тумблеров нет. */
     @Volatile
-    private var ecoCached: Boolean = false
+    private var ecoCached: Boolean = true
     /** Текущий эко-профиль опроса (battery-eco 2.1). */
     @Volatile
     private var ecoProfile: EcoGovernor.Profile = EcoGovernor.Profile.ACTIVE
@@ -109,21 +109,11 @@ class TrackingService : LifecycleService() {
             // Подписка на паузу: при включенной паузе точки не пишем.
             // Флаг дублируется в pausedCached, чтобы onRawLocation оставался
             // синхронным (вердикт + запись без гонок между колбэками).
-            // Эко-флаг — рядом: base ведет себя как раньше, eco включает
-            // губернатор STANDBY/BURST (battery-eco 1.1/2.4).
+            // Эко всегда включен (eco-always-on): тумблеров нет.
             launch {
                 container.dataStore.data.collect { prefs ->
                     val paused = prefs[PrefsKeys.PAUSED] ?: false
                     pausedCached = paused
-                    val eco = prefs[PrefsKeys.ECO_MODE] ?: false
-                    if (eco != ecoCached) {
-                        ecoCached = eco
-                        DevLog.i(
-                            "TRACK", "mode_changed",
-                            mapOf("mode" to ecoModeTag(), "profile" to ecoProfile.name)
-                        )
-                        if (!eco) enterProfile(EcoGovernor.Profile.ACTIVE, force = true)
-                    }
                     updateNotification(paused)
                 }
             }
@@ -132,13 +122,10 @@ class TrackingService : LifecycleService() {
             // строкой с нулями даже до первой движущейся точки.
             trackId = container.trackRepository.openDayChunk()
             chunkDate = java.time.LocalDate.now()
-            // Эко-профиль с прошлого запуска (battery-eco 2.4): base всегда ACTIVE.
+            // Эко-профиль с прошлого запуска (battery-eco 2.4).
             runCatching {
                 val saved = container.dataStore.data.first()[PrefsKeys.ECO_PROFILE]
-                val ecoNow = container.dataStore.data.first()[PrefsKeys.ECO_MODE] ?: false
-                ecoCached = ecoNow
-                ecoProfile = if (!ecoNow) EcoGovernor.Profile.ACTIVE
-                else EcoGovernor.fromName(saved)
+                ecoProfile = EcoGovernor.fromName(saved)
                 if (ecoProfile == EcoGovernor.Profile.BURST) {
                     ecoProfile = EcoGovernor.Profile.ACTIVE
                 }

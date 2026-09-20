@@ -97,6 +97,7 @@ fun SettingsScreen(nav: NavController) {
                 }
             }
             // --- Запись (trust-v2 4.1: единственное место паузы) ---
+            // Эко всегда включен (eco-always-on): тумблера нет.
             Text("Запись", style = MaterialTheme.typography.titleMedium)
             Card(Modifier.fillMaxWidth()) {
                 androidx.compose.foundation.layout.Row(
