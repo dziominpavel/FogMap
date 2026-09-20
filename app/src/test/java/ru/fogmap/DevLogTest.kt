@@ -6,6 +6,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import ru.fogmap.diag.DevLog
+import ru.fogmap.diag.DevRenderStats
 
 class DevLogTest {
 
@@ -45,6 +46,29 @@ class DevLogTest {
         assertEquals(DevLog.Level.I, e.level)
         assertEquals("agg", e.msg)
         assertTrue(e.payloadJson.contains("\"cells\":10"))
+    }
+
+    @Test
+    fun `агрегат различает fallback и несет уровень пятен`() {
+        // Один упорядоченный поток: синглтон DevRenderStats делит окно между
+        // тестами, поэтому все кадры — здесь с растущим nowMono.
+        DevRenderStats.onFrame(
+            dtMergeMs = 1.0, dtProjMs = 0.5, dtTotalMs = 1.5,
+            cells = 100, holes = 20, nullProj = 0,
+            overBudget = false, fallback = true, presenceZ = 19, nowMono = 10_000L
+        )
+        DevRenderStats.onFrame(
+            dtMergeMs = 1.0, dtProjMs = 0.5, dtTotalMs = 1.5,
+            cells = 100, holes = 20, nullProj = 0,
+            overBudget = false, fallback = true, presenceZ = 19, nowMono = 12_500L
+        )
+        val line = DevLog.snapshot().last()
+        val e = DevLog.parse(line)
+        assertNotNull(e)
+        assertEquals("agg", e!!.msg)
+        assertTrue(e.payloadJson.contains("\"fallback_hits\":2"))
+        assertTrue(e.payloadJson.contains("\"over_budget_hits\":0"))
+        assertTrue(e.payloadJson.contains("\"presence_z\":19"))
     }
 
     @Test

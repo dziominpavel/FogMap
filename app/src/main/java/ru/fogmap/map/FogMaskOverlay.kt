@@ -18,6 +18,12 @@ import androidx.compose.ui.graphics.graphicsLayer
  * Перо — градиентом на границе дырки ([BlendMode.DstOut] кольцами),
  * не блюром всего экрана: дешево на пане. Дырки уже спроецированы
  * слоем в [FogMask.HolePx]; здесь только пиксели.
+ *
+ * Грубые пятна присутствия ([FogMask.HolePx.coarse], smooth-fog-zoom)
+ * рисуются с увеличенным скруглением и пером от размера дырки:
+ * константа 6px незаметна на пятне 360 м (острые углы сетки),
+ * а четверть меньшей стороны скругляет ступени в мягкие пятна.
+ * Точные дырки — как раньше ([FogMask.CORNER_PX]/[FogMask.FEATHER_PX]).
  */
 @Composable
 fun FogMaskOverlay(
@@ -39,14 +45,16 @@ fun FogMaskOverlay(
             val w = h.right - h.left
             val hgt = h.bottom - h.top
             if (w <= 0f || hgt <= 0f) continue
+            val corner = cornerPxFor(w, hgt, h.coarse, cornerPx)
+            val feather = featherPxFor(h.coarse, featherPx)
             // Перо снаружи внутрь: широкие бледные кольца, затем глухое ядро.
-            for ((expand, alpha) in featherRings(featherPx)) {
+            for ((expand, alpha) in featherRings(feather)) {
                 drawRoundRect(
                     color = Color.Black.copy(alpha = alpha),
                     blendMode = BlendMode.DstOut,
                     topLeft = Offset(h.left - expand, h.top - expand),
                     size = Size(w + expand * 2f, hgt + expand * 2f),
-                    cornerRadius = CornerRadius(cornerPx + expand, cornerPx + expand)
+                    cornerRadius = CornerRadius(corner + expand, corner + expand)
                 )
             }
             drawRoundRect(
@@ -54,11 +62,32 @@ fun FogMaskOverlay(
                 blendMode = BlendMode.Clear,
                 topLeft = Offset(h.left, h.top),
                 size = Size(w, hgt),
-                cornerRadius = CornerRadius(cornerPx, cornerPx)
+                cornerRadius = CornerRadius(corner, corner)
             )
         }
     }
 }
+
+/**
+ * Скругление дырки: точным — константа, грубым пятнам — половина меньшей
+ * стороны («подушки»: ступени сетки не читаются острыми углами).
+ * Чистая, unit-тестируема.
+ */
+internal fun cornerPxFor(w: Float, hgt: Float, coarse: Boolean, cornerPx: Float): Float =
+    if (!coarse) cornerPx else maxOf(cornerPx, minOf(w, hgt) * COARSE_CORNER_FRAC)
+
+/** Доля меньшей стороны дырки для скругления грубых пятен. */
+internal const val COARSE_CORNER_FRAC = 0.5f
+
+/**
+ * Перо дырки: точным — константа, грубым пятнам — двойное для мягкого края.
+ * Чистая, unit-тестируема.
+ */
+internal fun featherPxFor(coarse: Boolean, featherPx: Float): Float =
+    if (!coarse) featherPx else featherPx * COARSE_FEATHER_MULT
+
+/** Множитель пера грубых пятен присутствия. */
+internal const val COARSE_FEATHER_MULT = 2.0f
 
 /** Кольца пера: (расширение наружу, alpha стирания). Широкое и мягкое. */
 internal fun featherRings(featherPx: Float): List<Pair<Float, Float>> = listOf(

@@ -90,6 +90,12 @@ object DevRenderStats {
     private var lastHoles = 0
     private var lastNullProj = 0
     private var overBudgetHits = 0
+    // Кадры fallback (smooth-fog-zoom): пятна вместо точного без вуали.
+    // Отдельно от overBudget (глухая вуаль), W-событий на fallback нет.
+    private var fallbackHits = 0
+    // Уровень отрисованных пятен последнего кадра (smooth-fog-zoom-2):
+    // 0 — точное без пятен, иначе z-уровень ступени.
+    private var lastPresenceZ = 0
     private var windowStartMono = 0L
     private var started = false
 
@@ -97,6 +103,8 @@ object DevRenderStats {
     fun onFrame(
         dtMergeMs: Double, dtProjMs: Double, dtTotalMs: Double,
         cells: Int, holes: Int, nullProj: Int, overBudget: Boolean,
+        fallback: Boolean = false,
+        presenceZ: Int = 0,
         nowMono: Long
     ) {
         // Аномалии — сразу, мимо агрегатора.
@@ -110,7 +118,8 @@ object DevRenderStats {
                     "cells" to cells,
                     "holes" to holes,
                     "null_proj" to nullProj,
-                    "over_budget" to overBudget
+                    "over_budget" to overBudget,
+                    "fallback" to fallback
                 )
             )
         }
@@ -126,7 +135,9 @@ object DevRenderStats {
         lastCells = cells
         lastHoles = holes
         lastNullProj = nullProj
+        lastPresenceZ = presenceZ
         if (overBudget) overBudgetHits++
+        if (fallback && !overBudget) fallbackHits++
         if (nowMono - windowStartMono >= 2000L) {
             val avg = if (frames > 0) sumTotalMs / frames else 0.0
             DevLog.i(
@@ -140,7 +151,9 @@ object DevRenderStats {
                     "cells" to lastCells,
                     "holes" to lastHoles,
                     "null_proj" to lastNullProj,
-                    "over_budget_hits" to overBudgetHits
+                    "over_budget_hits" to overBudgetHits,
+                    "fallback_hits" to fallbackHits,
+                    "presence_z" to lastPresenceZ
                 )
             )
             frames = 0
@@ -149,6 +162,8 @@ object DevRenderStats {
             sumMergeMs = 0.0
             sumProjMs = 0.0
             overBudgetHits = 0
+            fallbackHits = 0
+            lastPresenceZ = 0
             windowStartMono = nowMono
         }
     }

@@ -254,6 +254,10 @@ fun MapScreen(nav: NavController) {
         // Target — парой (у Point нет equals, remember бы пересчитывал всегда).
         var camZoom by remember { mutableStateOf(14f) }
         var camTarget by remember { mutableStateOf(55.7558 to 37.6173) }
+        // Гистерезис показа (smooth-fog-zoom): раз упав в пятна присутствия,
+        // держим их пока точных дырок больше RETURN_THRESHOLD. Сбрасывается
+        // сам при уходе зума из зоны >= DETAIL_ZOOM (см. wantPresence ниже).
+        var presenceStuck by remember { mutableStateOf(false) }
         // Туман в памяти: прелоад + живые инкременты (2.1–2.2).
         var cells by remember { mutableStateOf(emptySet<Cell>()) }
         LaunchedEffect(mapView) {
@@ -441,7 +445,7 @@ fun MapScreen(nav: NavController) {
         // точна, azimuth-ключа нет.
         // worldToScreen может вернуть null (точка за камерой) — тогда дырки
         // нет (fail-closed). Лог — след спайка 1.1–1.2.
-        val holesPx: List<HolePx> = remember(cells, camZoom, camTarget, liveLatLon) {
+        val holesPx: List<HolePx> = remember(cells, camZoom, camTarget, liveLatLon, presenceStuck) {
             // ВРЕМЕННОЕ (dev-logging): замеры merge vs проекция, агрегат вместо спама.
             val t0 = System.nanoTime()
             val region = runCatching {
@@ -454,7 +458,31 @@ fun MapScreen(nav: NavController) {
                 val dLon = (rightLon - leftLon) * 0.25
                 FogMask.RegionBox(topLat + dLat, bottomLat - dLat, leftLon - dLon, rightLon + dLon)
             }.getOrNull()
-            val holes = FogMask.holesForZoom(cells, camZoom, region)
+            val detailed = FogMask.holesForZoom(cells, camZoom, region)
+            // Гистерезис (smooth-fog-zoom): переполнение считаем за MAX+1,
+            // точное значение выше лимита слою не нужно; точный подсчет
+            // с cap нужен только для решения об удержании пятен.
+            val preciseCount = if (detailed.mode == FogMask.Mode.PRECISE) detailed.holes.size
+            else FogMask.preciseHoleCount(cells, camZoom, region)
+            val overflowed = detailed.mode != FogMask.Mode.PRECISE
+            val wantPresence = camZoom >= FogMask.DETAIL_ZOOM &&
+                FogMask.resolvePresenceStuck(
+                    if (overflowed) FogMask.MAX_HOLES + 1 else preciseCount,
+                    presenceStuck
+                )
+            if (wantPresence != presenceStuck) presenceStuck = wantPresence
+            // Удержание пятен при влезающем точном (полоса 601–800): пятна
+            // строим отдельно той же лесенкой; в остальных случаях результат
+            // holesForZoom уже нужный (точное либо fallback-лесенка).
+            // Режим показанного нужен диагностике (`presence_z` в RENDER agg).
+            val shown = if (wantPresence && !overflowed)
+                FogMask.presenceFallbackHoles(cells, camZoom, region)
+            else detailed
+            val holes = shown.holes
+            val presenceZ = shown.mode.presenceZ()
+            // Показ пятен вместо точного в зоне >= 13 — fallback для лога
+            // (лесенка 11–13 и обзор — штатный режим, не fallback).
+            val isFallback = wantPresence
             val tMerge = System.nanoTime()
             val out = ArrayList<HolePx>(holes.size.coerceAtMost(FogMask.MAX_HOLES))
             var nullProj = 0
@@ -473,7 +501,10 @@ fun MapScreen(nav: NavController) {
                         FogMask.ensureMinPx(
                             HolePx(
                                 minOf(s1.x, s2.x), minOf(s1.y, s2.y),
-                                maxOf(s1.x, s2.x), maxOf(s1.y, s2.y)
+                                maxOf(s1.x, s2.x), maxOf(s1.y, s2.y),
+                                // Грубые пятна (z16 и грубее, включая родителей
+                                // компакшна) — мягкие углы, см. FogMaskOverlay.
+                                h.z <= FogMask.MID_PRESENCE_Z
                             )
                         )
                     )
@@ -506,6 +537,7 @@ fun MapScreen(nav: NavController) {
             }
             // ВРЕМЕННОЕ (dev-logging): агрегат 2 сек + W при кадре > 500мс/overBudget.
             // Покадровый Log.d удален (2.3): при пане был шторм строк с format().
+            // Fallback виден только в агрегате (smooth-fog-zoom), W на него нет.
             val t1 = System.nanoTime()
             runCatching {
                 DevRenderStats.onFrame(
@@ -516,6 +548,8 @@ fun MapScreen(nav: NavController) {
                     holes = out.size,
                     nullProj = nullProj,
                     overBudget = isOverBudget,
+                    fallback = isFallback && !isOverBudget,
+                    presenceZ = if (isOverBudget) 0 else presenceZ,
                     nowMono = SystemClock.elapsedRealtime()
                 )
             }

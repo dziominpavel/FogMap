@@ -24,6 +24,20 @@ object FogMask {
     /** Уровень пятен присутствия: средний зум (улицы видны, но мелочь тяжела). */
     const val MID_PRESENCE_Z = 16
 
+    /**
+     * Промежуточный уровень fallback (smooth-fog-zoom): первая ступень отката
+     * при переборе точных дырок (~90 м в Минске). Прыжок x8 вместо x32 сразу
+     * на z16; при переборе и z18 — откат на [MID_PRESENCE_Z] как раньше.
+     */
+    const val NEAR_PRESENCE_Z = 18
+
+    /**
+     * Мелкая ступень fallback (smooth-fog-zoom-2): первая ступень отката
+     * (~45 м в Минске). Прыжок x4 вместо x8; в сверхплотных вьюпортах
+     * перебирает и падает дальше по лесенке.
+     */
+    const val FINE_PRESENCE_Z = 19
+
     /** Уровень пятен присутствия: дальний зум (обзор города). */
     const val FAR_PRESENCE_Z = 14
 
@@ -39,6 +53,13 @@ object FogMask {
      */
     const val MAX_HOLES = 800
 
+    /**
+     * Порог возврата гистерезиса (smooth-fog-zoom): раз упав в пятна,
+     * держим их пока точных дырок больше этого порога. Строго меньше
+     * [MAX_HOLES], полоса гистерезиса — 200 дырок.
+     */
+    const val RETURN_THRESHOLD = 600
+
     /** Широкое мягкое перо (1.3: принято 14px) и скругление (принято 6px). */
     const val FEATHER_PX = 14f
     const val CORNER_PX = 6f
@@ -46,11 +67,44 @@ object FogMask {
     /** Минимум на дырку, чтобы тропа не схлопывалась в ноль. */
     const val MIN_HOLE_PX = 2f
 
-    /** Дырка в пикселях экрана (физических) для оверлея. */
-    data class HolePx(val left: Float, val top: Float, val right: Float, val bottom: Float)
+    /**
+     * Дырка в пикселях экрана (физических) для оверлея. Флаг [coarse]
+     * отмечает грубые пятна присутствия: оверлей рисует их с увеличенным
+     * скруглением и пером, иначе ступени сетки выглядят остроугольно.
+     */
+    data class HolePx(
+        val left: Float,
+        val top: Float,
+        val right: Float,
+        val bottom: Float,
+        val coarse: Boolean = false
+    )
 
     /** Дырка в клетках с уровнем (после склейки). */
     data class Hole(val z: Int, val rect: FogRects.Rect)
+
+    /**
+     * Режим показа дырок (smooth-fog-zoom): слой отличает точное от
+     * fallback-ступеней и считает fallback в диагностике отдельно от вуали.
+     */
+    enum class Mode {
+        PRECISE, PRESENCE_Z19, PRESENCE_Z18, PRESENCE_Z16, PRESENCE_Z14;
+
+        /**
+         * Уровень отрисованных пятен для диагностики (smooth-fog-zoom-2):
+         * 0 — точное без пятен, иначе z-уровень ступени.
+         */
+        fun presenceZ(): Int = when (this) {
+            PRECISE -> 0
+            PRESENCE_Z19 -> FINE_PRESENCE_Z
+            PRESENCE_Z18 -> NEAR_PRESENCE_Z
+            PRESENCE_Z16 -> MID_PRESENCE_Z
+            PRESENCE_Z14 -> FAR_PRESENCE_Z
+        }
+    }
+
+    /** Дырки кадра вместе с режимом показа. */
+    data class HolesResult(val holes: List<Hole>, val mode: Mode)
 
     /** Рамка viewport в координатах (срез в памяти, без БД на сдвиг). */
     data class RegionBox(
@@ -93,51 +147,114 @@ object FogMask {
      * Лестница вместо одного порога: иначе пятно z14 выглядит гигантским
      * рядом с точной ниткой (поп на границе 13). Склейка — [FogRects.merge].
      *
-     * Перебор точных дырок (> [MAX_HOLES]) откатывается на пятна
-     * [MID_PRESENCE_Z] по тому же срезу viewport (без скалы 800 -> 0);
+     * Перебор точных дырок (> [MAX_HOLES]) откатывается лесенкой:
+     * сначала пятна [FINE_PRESENCE_Z], при переборе — [NEAR_PRESENCE_Z],
+     * затем [MID_PRESENCE_Z] по тому же срезу viewport (без скалы 800 -> 0);
      * перебор и пятен возвращается как есть — слой рисует глухую вуаль.
+     * Ниже [FAR_ZOOM] (smooth-fog-zoom-2): сначала пятна [MID_PRESENCE_Z],
+     * при переборе — [FAR_PRESENCE_Z]; тонкий маршрут выглядит змейкой,
+     * а не кляксой на полгорода.
      */
-    fun holesForZoom(cells: Set<Cell>, zoom: Float, region: RegionBox? = null): List<Hole> {
-        if (cells.isEmpty()) return emptyList()
-        if (zoom < FAR_ZOOM) return presenceHoles(viewportCells(cells, region), FAR_PRESENCE_Z)
-        if (zoom < DETAIL_ZOOM) return presenceHoles(viewportCells(cells, region), MID_PRESENCE_Z)
+    fun holesForZoom(cells: Set<Cell>, zoom: Float, region: RegionBox? = null): HolesResult {
+        if (cells.isEmpty()) return HolesResult(emptyList(), Mode.PRECISE)
+        if (zoom < FAR_ZOOM) {
+            val sliced = viewportCells(cells, region)
+            val near = presenceHoles(sliced, MID_PRESENCE_Z)
+            if (!overBudget(near)) return HolesResult(near, Mode.PRESENCE_Z16)
+            return HolesResult(presenceHoles(sliced, FAR_PRESENCE_Z), Mode.PRESENCE_Z14)
+        }
+        if (zoom < DETAIL_ZOOM) {
+            return HolesResult(presenceHoles(viewportCells(cells, region), MID_PRESENCE_Z), Mode.PRESENCE_Z16)
+        }
         val visible = viewportCells(cells, region)
-        if (visible.isEmpty()) return emptyList()
+        if (visible.isEmpty()) return HolesResult(emptyList(), Mode.PRECISE)
         val byLevel = visible.groupBy { it.z }
         val out = ArrayList<Hole>()
         for ((z, levelCells) in byLevel) {
             for (r in FogRects.merge(levelCells.toSet())) {
                 out.add(Hole(z, r))
-                if (out.size > MAX_HOLES) return fallbackHoles(visible)
+                if (out.size > MAX_HOLES) return fallbackResult(visible)
+            }
+        }
+        return HolesResult(out, Mode.PRECISE)
+    }
+
+    /**
+     * Лесенка fallback при переборе точных дырок: пятна [FINE_PRESENCE_Z],
+     * затем [NEAR_PRESENCE_Z] и [MID_PRESENCE_Z]. Клетки грубее целевого
+     * уровня (родители компакшна, у которых нет предка этого уровня)
+     * рисуются как есть своим уровнем — иначе [FogGrid.ancestorAt] бросил
+     * бы require. Перебор и здесь возвращается как есть для глухой вуали
+     * вторым уровнем защиты.
+     */
+    private fun fallbackResult(visible: Set<Cell>): HolesResult {
+        val fine = fallbackHoles(visible, FINE_PRESENCE_Z)
+        if (!overBudget(fine)) return HolesResult(fine, Mode.PRESENCE_Z19)
+        val near = fallbackHoles(visible, NEAR_PRESENCE_Z)
+        if (!overBudget(near)) return HolesResult(near, Mode.PRESENCE_Z18)
+        val mid = fallbackHoles(visible, MID_PRESENCE_Z)
+        return HolesResult(mid, Mode.PRESENCE_Z16)
+    }
+
+    /**
+     * Пятна fallback для показа при залипании гистерезиса (слой уже решил
+     * держать пятна, точный подсчет влезает в [RETURN_THRESHOLD], но режим
+     * еще не отпустил). Та же лесенка, что внутри [holesForZoom]; режим
+     * нужен слою для диагностики (`presence_z`).
+     */
+    fun presenceFallbackHoles(cells: Set<Cell>, zoom: Float, region: RegionBox? = null): HolesResult =
+        fallbackResult(viewportCells(cells, region))
+
+    private fun fallbackHoles(visible: Set<Cell>, z: Int): List<Hole> {
+        val fine = visible.filterTo(HashSet()) { it.z >= z }
+        val coarseByLevel = visible.filter { it.z < z }.groupBy { it.z }
+        val out = ArrayList<Hole>()
+        if (fine.isNotEmpty()) {
+            for (h in presenceHoles(fine, z)) {
+                out.add(h)
+                if (out.size > MAX_HOLES) return out
+            }
+        }
+        for ((cz, levelCells) in coarseByLevel) {
+            for (r in FogRects.merge(levelCells.toSet())) {
+                out.add(Hole(cz, r))
+                if (out.size > MAX_HOLES) return out
             }
         }
         return out
     }
 
     /**
-     * Fallback при переборе точных дырок: пятна [MID_PRESENCE_Z] по тому же
-     * срезу viewport. Клетки грубее [MID_PRESENCE_Z] (родители компакшна
-     * z14–z15, у которых нет предка z16) рисуются как есть своим уровнем —
-     * иначе [FogGrid.ancestorAt] бросил бы require. Перебор и здесь
-     * возвращается как есть для глухой вуали вторым уровнем защиты.
+     * Число точных дырок с ранним выходом на [cap] (для гистерезиса слоя:
+     * решение об удержании пятен без полного merge). Возвращает не больше
+     * [cap]; точное значение выше cap слою не нужно.
      */
-    private fun fallbackHoles(visible: Set<Cell>): List<Hole> {
-        val fine = visible.filterTo(HashSet()) { it.z >= MID_PRESENCE_Z }
-        val coarseByLevel = visible.filter { it.z < MID_PRESENCE_Z }.groupBy { it.z }
-        val out = ArrayList<Hole>()
-        if (fine.isNotEmpty()) {
-            for (h in presenceHoles(fine, MID_PRESENCE_Z)) {
-                out.add(h)
-                if (out.size > MAX_HOLES) return out
-            }
+    fun preciseHoleCount(
+        cells: Set<Cell>,
+        zoom: Float,
+        region: RegionBox? = null,
+        cap: Int = RETURN_THRESHOLD + 1
+    ): Int {
+        if (cells.isEmpty() || zoom < DETAIL_ZOOM) return 0
+        val visible = viewportCells(cells, region)
+        var count = 0
+        for ((_, levelCells) in visible.groupBy { it.z }) {
+            count += FogRects.merge(levelCells.toSet()).size
+            if (count >= cap) return cap
         }
-        for ((z, levelCells) in coarseByLevel) {
-            for (r in FogRects.merge(levelCells.toSet())) {
-                out.add(Hole(z, r))
-                if (out.size > MAX_HOLES) return out
-            }
-        }
-        return out
+        return count
+    }
+
+    /**
+     * Чистое решение гистерезиса (smooth-fog-zoom): уходить в пятна при
+     * переборе ([preciseCount] > [MAX_HOLES]), держать пятна пока
+     * [preciseCount] > [RETURN_THRESHOLD], иначе показывать точное.
+     * Колебание 790/810 вокруг лимита режим каждый кадр не переключает.
+     */
+    fun resolvePresenceStuck(preciseCount: Int, stuck: Boolean): Boolean {
+        if (preciseCount > MAX_HOLES) return true
+        if (stuck && preciseCount > RETURN_THRESHOLD) return true
+        return false
     }
 
     fun presenceHoles(cells: Set<Cell>, z: Int): List<Hole> {
@@ -183,6 +300,6 @@ object FogMask {
         val cy = (h.top + h.bottom) / 2f
         val nw = maxOf(w, min)
         val nh = maxOf(hgt, min)
-        return HolePx(cx - nw / 2f, cy - nh / 2f, cx + nw / 2f, cy + nh / 2f)
+        return HolePx(cx - nw / 2f, cy - nh / 2f, cx + nw / 2f, cy + nh / 2f, h.coarse)
     }
 }
