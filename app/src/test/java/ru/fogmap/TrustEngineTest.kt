@@ -35,7 +35,7 @@ class TrustEngineTest {
                     if (keep != null) history.add(keep)
                 }
                 history.add(p)
-                while (history.size > TrustEngine.HISTORY_MAX) history.removeAt(0)
+                TrustEngine.pruneHistory(history, p.time)
             }
         }
     }
@@ -275,5 +275,64 @@ class TrustEngineTest {
         assertEquals(TrustEngine.State.SUSPECT, v.state)
         assertFalse(v.openFog)
         assertEquals(FogRepository.REJECT_JUMP, v.countReject)
+    }
+
+    @Test
+    fun `ходьба на плотной доставке 1 Гц остается движением`() {
+        // fix-eco-signal-loss 1.3: на проде BURST отдавал ~1 Гц, окно из
+        // восьми точек покрывало 7 секунд, и идущий человек был STAND.
+        val stand = (0 until 45).map { pt(53.9, dtS = 1) }
+        val walk = (1..30).map { pt(53.9 + it * 0.0000135, dtS = 1) } // ~1.5 м/с
+        val verdicts = run(stand + walk)
+        val walkVerdicts = verdicts.drop(stand.size)
+        // Первые секунды еще в радиусе якоря, к концу прогулки — уверенно MOVING.
+        assertTrue(
+            "хвост ходьбы должен быть MOVING, а не STAND",
+            walkVerdicts.takeLast(10).all { it.state == TrustEngine.State.MOVING }
+        )
+    }
+
+    @Test
+    fun `стоянка с джиттером на плотной доставке остается STAND`() {
+        // 1 Гц, джиттер ±2 м: пары могут давать implied выше 0.5 м/с, но
+        // подтвержденная статика не должна выбиваться джиттером.
+        val offsetsM = listOf(0.0, 2.0, -2.0, 1.0, -1.0)
+        val series = (0 until 60).map {
+            pt(53.9 + offsetsM[it % offsetsM.size] / 111_320.0, dtS = 1)
+        }
+        val verdicts = run(series)
+        assertTrue(
+            "стоянка не должна выбиваться джиттером",
+            verdicts.drop(45).all { it.state == TrustEngine.State.STAND }
+        )
+        assertFalse(verdicts.last().openFog)
+        assertNull(verdicts.last().countReject)
+    }
+
+    @Test
+    fun `остановка после движения уходит в STAND не позднее минуты`() {
+        val walk = (0 until 30).map { pt(53.9 + it * 0.0000135, dtS = 1) }
+        val stopPos = 53.9 + 30 * 0.0000135
+        val stop = (0 until 70).map { pt(stopPos, dtS = 1) }
+        val verdicts = run(walk + stop)
+        val stopVerdicts = verdicts.drop(walk.size)
+        assertTrue(
+            "через минуту стоянки вердикт должен быть STAND",
+            stopVerdicts.takeLast(5).all { it.state == TrustEngine.State.STAND }
+        )
+    }
+
+    @Test
+    fun `плотный поток не меняет хвост вердиктов относительно 8 секунд`() {
+        // fix-eco-signal-loss 1.4: медиана и потолки не должны зависеть от
+        // плотности доставки — разгон 14 м/с после стоянки везде без jump.
+        fun drive(dtS: Long): List<TrustEngine.Verdict> {
+            val stand = (0 until 8).map { pt(53.9, dtS = dtS) }
+            val move = (1..20).map { pt(53.9 + it * 0.0001261 * dtS, dtS = dtS) }
+            return run(stand + move)
+        }
+        val dense = drive(1).takeLast(12).map { it.state to it.countReject }
+        val normal = drive(8).takeLast(12).map { it.state to it.countReject }
+        assertEquals(normal, dense)
     }
 }

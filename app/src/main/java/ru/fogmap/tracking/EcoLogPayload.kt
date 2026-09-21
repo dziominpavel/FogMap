@@ -21,6 +21,16 @@ object EcoLogPayload {
     const val KEY_VERDICT = "verdict"
     /** Источник пробуждения (wake-balance-parking 4.1): gps/motion/wifi/timeout/restart. */
     const val KEY_SOURCE = "source"
+    /**
+     * Пер-эвентный префикс (fix-eco-signal-loss 4.1/4.2): длина и источник
+     * (anchor — пробуждение от якоря, gap — разрыв после тишины).
+     */
+    const val KEY_PREFIX_M = "prefix_m"
+    const val KEY_PREFIX_SRC = "prefix_src"
+    const val PREFIX_SRC_ANCHOR = "anchor"
+    const val PREFIX_SRC_GAP = "gap"
+    /** Фактическая длительность тишины Fused (fix-eco-signal-loss 3.1). */
+    const val KEY_GAP_MS = "gap_ms"
 
     /** Нет якоря / неприменимо (wake_m): число, а не null — парсер проще. */
     const val NO_ANCHOR_M = -1L
@@ -34,7 +44,9 @@ object EcoLogPayload {
         profile: String,
         ecoFix: Long,
         ecoStand: Long,
-        ecoGpsMs: Long
+        ecoGpsMs: Long,
+        prefixM: Long? = null,
+        prefixSrc: String? = null
     ): Map<String, Any?> = mapOf(
         KEY_BATCH to batch,
         KEY_REJECTED to rejected,
@@ -44,8 +56,29 @@ object EcoLogPayload {
         KEY_PROFILE to profile,
         KEY_ECO_FIX to ecoFix,
         KEY_ECO_STAND to ecoStand,
-        KEY_ECO_GPS_MS to ecoGpsMs
+        KEY_ECO_GPS_MS to ecoGpsMs,
+        KEY_PREFIX_M to prefixM,
+        KEY_PREFIX_SRC to prefixSrc
     )
+
+    /** Тишина Fused (fix-eco-signal-loss 3.1): фактическая длительность, не порог. */
+    fun noFixPayload(gapMs: Long, mode: String, profile: String): Map<String, Any?> = mapOf(
+        KEY_GAP_MS to gapMs,
+        KEY_MODE to mode,
+        KEY_PROFILE to profile
+    )
+
+    /**
+     * Источник спрямления (fix-eco-signal-loss 4.1): якорь пробуждения идет
+     * в бюджет префикса, разрыв после тишины — в отдельную метрику, мелочь
+     * (меньше 50 м или межбатчевые секунды) не считается вовсе. Чистая,
+     * тестируется без Android.
+     */
+    fun prefixKind(hasAnchor: Boolean, distanceM: Double, gapS: Long): String? = when {
+        hasAnchor && distanceM >= 50.0 -> PREFIX_SRC_ANCHOR
+        !hasAnchor && distanceM >= 50.0 && gapS >= 60 -> PREFIX_SRC_GAP
+        else -> null
+    }
 
     fun ecoStatePayload(
         mode: String,

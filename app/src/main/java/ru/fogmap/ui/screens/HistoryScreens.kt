@@ -295,7 +295,7 @@ fun HistoryDetailScreen(nav: NavController, trackId: Long) {
     var dayRejected by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
     // Эко-метрики дня (battery-eco 1.3/1.4): режим и медиана префикса.
     var dayEco by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
-    var dayPrefixAvgM by remember { mutableStateOf(0.0) }
+    var dayPrefixMedianM by remember { mutableStateOf(0.0) }
     val points = pointEnts.map { Point(it.lat, it.lon) }
     var renameOpen by remember { mutableStateOf(false) }
     var deleteOpen by remember { mutableStateOf(false) }
@@ -319,7 +319,7 @@ fun HistoryDetailScreen(nav: NavController, trackId: Long) {
                 dayAreaKm2 = app.container.statsRepository.stats(range).areaKm2
                 dayRejected = app.container.statsRepository.rejectedBreakdown(range)
                 dayEco = app.container.statsRepository.ecoBreakdown(range)
-                dayPrefixAvgM = app.container.statsRepository.ecoPrefixAvgM(range)
+                dayPrefixMedianM = app.container.statsRepository.ecoPrefixMedianM(range)
             }
         }
     }
@@ -375,22 +375,33 @@ fun HistoryDetailScreen(nav: NavController, trackId: Long) {
                                 style = MaterialTheme.typography.bodySmall
                             )
                         }
-                        // Эко-диагностика дня (battery-eco 1.4): режим + префикс.
+                        // Эко-диагностика дня (battery-eco 1.4): режим, медиана
+                        // префикса и отдельно разрывы доставки
+                        // (fix-eco-signal-loss 4.4).
                         val ecoFix = dayEco["fix"] ?: 0
                         val ecoStand = dayEco["stand"] ?: 0
                         val ecoGpsMs = dayEco["gps_ms"] ?: 0
                         val ecoIdle = dayEco["idle_burst"] ?: 0
+                        val gapN = dayEco["gap_n"] ?: 0
+                        val gapCm = dayEco["gap_cm"] ?: 0
                         if (ecoFix > 0 || ecoStand > 0) {
                             Text(
                                 "Эко: фиксов $ecoFix, STAND $ecoStand, " +
                                     "GPS ${"%.1f".format(ecoGpsMs / 3600000.0)} ч, " +
-                                    "префикс ${"%.0f".format(dayPrefixAvgM)} м" +
+                                    "медиана префикса ${"%.0f".format(dayPrefixMedianM)} м" +
                                     if (ecoIdle > 0) ", холостых BURST $ecoIdle" else "",
                                 style = MaterialTheme.typography.bodySmall
                             )
-                            if (dayPrefixAvgM > 200.0) {
+                            if (gapN > 0) {
                                 Text(
-                                    "Префикс выше бюджета 200 м",
+                                    "Разрывы доставки: $gapN, суммарно " +
+                                        "${"%.2f".format(gapCm / 100000.0)} км",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                            if (dayPrefixMedianM > 200.0) {
+                                Text(
+                                    "Медиана префикса выше бюджета 200 м",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.error
                                 )

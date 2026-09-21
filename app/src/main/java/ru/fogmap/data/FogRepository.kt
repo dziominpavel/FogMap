@@ -117,7 +117,7 @@ class FogRepository(private val db: AppDatabase) {
             ?: wakeAnchor?.let { PendingGate.Item(-1, it.lat, it.lon, it.time) }
         val res = PendingGate.adjudicate(
             pendingAsc = tail.reversed().map {
-                PendingGate.Item(it.id, it.lat, it.lon, it.time)
+                PendingGate.Item(it.id, it.lat, it.lon, it.time, it.state)
             },
             anchor = anchorItem,
             newest = PendingGate.Item(-1, newest.lat, newest.lon, newest.time)
@@ -296,9 +296,24 @@ class FogRepository(private val db: AppDatabase) {
         const val ECO_PREFIX_N = "prefix_n"
         /** Холостые BURST без подтверждения движения (wake-balance-parking 4.1). */
         const val ECO_IDLE_BURST = "idle_burst"
+        /**
+         * Разрыв после тишины (fix-eco-signal-loss 4.1): отдельная метрика,
+         * не попадает в бюджет префикса пробуждения.
+         */
+        const val ECO_GAP_CM = "gap_cm"
+        const val ECO_GAP_N = "gap_n"
+        /**
+         * Бакеты распределения префикса (fix-eco-signal-loss 4.3): медиана
+         * считается по гистограмме, а не как среднее, без миграции БД.
+         */
+        const val ECO_PREFIX_B100_N = "prefix_b100_n"
+        const val ECO_PREFIX_B200_N = "prefix_b200_n"
+        const val ECO_PREFIX_B500_N = "prefix_b500_n"
+        const val ECO_PREFIX_BHI_N = "prefix_bhi_n"
         val ECO_METRICS = listOf(
             ECO_FIX, ECO_STAND, ECO_GPS_MS, ECO_FLUSH, ECO_PREFIX_CM, ECO_PREFIX_N,
-            ECO_IDLE_BURST
+            ECO_IDLE_BURST, ECO_GAP_CM, ECO_GAP_N,
+            ECO_PREFIX_B100_N, ECO_PREFIX_B200_N, ECO_PREFIX_B500_N, ECO_PREFIX_BHI_N
         )
 
         /** Разрезы счетчиков: all + день + неделя (единые для всех метрик). */

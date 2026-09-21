@@ -26,7 +26,12 @@ object PendingGate {
     const val LAG = 2
     /** Ближе якоря — не вылет, вето не применяется. */
     const val VETO_MIN_DIST_M = 200.0
-    /** Старше — протухла (ночная статика утром не открывается). */
+    /**
+     * Старше — протухла (ночная статика утром не открывается).
+     * Применяется только к не-MOVING точкам (fix-eco-signal-loss 2.1):
+     * движение после обрыва доставки подтверждается, а не ветируется
+     * по возрасту.
+     */
     const val MAX_PENDING_AGE_S = 600L
     /**
      * Окно хвоста из БД: с запасом покрывает FLUSH_SIZE + перенос лага,
@@ -34,7 +39,17 @@ object PendingGate {
      */
     const val TAIL_LIMIT = 32
 
-    data class Item(val id: Long, val lat: Double, val lon: Double, val time: Long)
+    data class Item(
+        val id: Long,
+        val lat: Double,
+        val lon: Double,
+        val time: Long,
+        /**
+         * Вердикт точки (STAND/MOVING/SUSPECT). null — старые вызовы/якорь:
+         * трактуется как не-MOVING (протухание применяется).
+         */
+        val state: String? = null
+    )
 
     data class Result(
         val confirmed: List<Item>,
@@ -63,7 +78,10 @@ object PendingGate {
             val roundTrip = anch != null &&
                 out > VETO_MIN_DIST_M &&
                 back < TrustEngine.RETURN_RATIO * out
-            val stale = (newest.time - c.time) / 1000 > MAX_PENDING_AGE_S
+            // Протухание — только для не-MOVING (fix-eco-signal-loss 2.1):
+            // хвост движения после морозки процесса не должен пропадать.
+            val stale = c.state != TrustEngine.State.MOVING.name &&
+                (newest.time - c.time) / 1000 > MAX_PENDING_AGE_S
             if (roundTrip || stale) {
                 vetoed.add(c)
                 reasons[c.id] = if (stale) FogRepository.VETO_STALE else FogRepository.VETO_RETURN

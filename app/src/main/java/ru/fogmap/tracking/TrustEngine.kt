@@ -25,8 +25,20 @@ import kotlin.math.sin
  */
 object TrustEngine {
     // --- Пороги (калибруются полевым тестом, см. fog-pyramid) ---
-    const val HISTORY_MAX = 8
-    const val STATIC_MIN_POINTS = 5
+    /**
+     * История ограничена ВРЕМЕНЕМ, а не числом точек (fix-eco-signal-loss 1.1):
+     * вердикт SHALL NOT зависеть от фактической частоты доставки Fused.
+     * 21.09 при 1 Гц окно из 8 точек покрывало 7 секунд и ходьба выглядела
+     * статикой. [HISTORY_MAX_COUNT] — предохранитель от очень плотного потока.
+     */
+    const val HISTORY_MAX_AGE_MS = 60_000L
+    const val HISTORY_MAX_COUNT = 256
+    /**
+     * Минимальный возраст якоря истории для авторитетного правила статики
+     * (fix-eco-signal-loss 1.2): короче окна — только предохранитель для
+     * уже подтвержденного STAND, иначе правило молчит.
+     */
+    const val STATIC_MIN_SPAN_MS = 40_000L
     const val STATIC_RADIUS_M = 25.0
     /** Из статики быстрее brisk walk — подозрение (машина так не трогается за 8 сек). */
     const val STAND_CAP_MS = 3.0
@@ -142,17 +154,29 @@ object TrustEngine {
 
         // 2. Статичный кластер = стоим, открытие заморожено (не отброс!).
         // Меряем смещение от СТАРОГО края истории, а не разброс скользящего
-        // окна: окно едет вместе с медленным пешеходом и никогда бы не
-        // сработало, а якорь держит (час в офисе = смещение в метрах).
-        if (history.size + 1 >= STATIC_MIN_POINTS) {
-            val anchor = history.first()
-            val drift = FogRepository.haversineM(anchor.lat, anchor.lon, new.lat, new.lon)
+        // окна, и судим по ВРЕМЕНИ, а не по числу точек (fix-eco-signal-loss
+        // 1.2): на плотной доставке окно из 8 точек покрывало 7 секунд, и
+        // идущий человек выглядел стоящим.
+        // Авторитетное правило: якорь старше окна и дрейф в радиусе — STAND.
+        // Дрейф больше радиуса — не статика, решает обычная ветка.
+        val oldest = history.first()
+        val anchorAgeMs = new.time - oldest.time
+        val drift = FogRepository.haversineM(oldest.lat, oldest.lon, new.lat, new.lon)
+        if (anchorAgeMs >= STATIC_MIN_SPAN_MS) {
             if (drift <= STATIC_RADIUS_M) {
                 return afterSilence(
                     Verdict(State.STAND, TRUST_STAND, false, null, PrevState(State.STAND, TRUST_STAND)),
                     dtS
                 )
             }
+        } else if (prev?.state == State.STAND && drift <= STATIC_RADIUS_M) {
+            // Короткий предохранитель: джиттер плотной доставки не выбивает
+            // из уже подтвержденной статики. К MOVING/SUSPECT не применяется,
+            // поэтому пробуждение и разгон не залипают.
+            return afterSilence(
+                Verdict(State.STAND, TRUST_STAND, false, null, PrevState(State.STAND, TRUST_STAND)),
+                dtS
+            )
         }
 
         // 2в. Выход после долгой тишины (wake-balance-parking 3.1): первая
@@ -273,6 +297,22 @@ object TrustEngine {
             },
             dtS
         )
+    }
+
+    /**
+     * Чистка истории по времени и количеству (fix-eco-signal-loss 1.1):
+     * общая для сервиса, перепрожки трек-дебага и тестов — окно вердикта
+     * везде одинаковое и не зависит от частоты доставки.
+     *
+     * Всегда оставляем минимум два последних кадра: предпоследний нужен
+     * ветке продолжения пробуждения (2г), когда старая точка уже выпала
+     * из временного окна, а следующая точка пачки пришла через доли секунды.
+     */
+    fun pruneHistory(hist: MutableList<HistPoint>, nowMs: Long) {
+        while (hist.size > HISTORY_MAX_COUNT) hist.removeAt(0)
+        while (hist.size > 2 && nowMs - hist.first().time > HISTORY_MAX_AGE_MS) {
+            hist.removeAt(0)
+        }
     }
 
     /**

@@ -22,3 +22,8 @@ ApiKeys.kt
 # OS
 .DS_Store
 Thumbs.db
+
+# Field data: персональные геоданные, в git НЕ коммитить
+dist/fog-*.jsonl
+dist/photo_*
+dist/track-debug_*

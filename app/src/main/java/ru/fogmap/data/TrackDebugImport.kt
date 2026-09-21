@@ -135,7 +135,7 @@ object TrackDebugImport {
                 if (keep != null) hist.addLast(keep)
             }
             hist.addLast(hp)
-            while (hist.size > TrustEngine.HISTORY_MAX) hist.removeFirst()
+            TrustEngine.pruneHistory(hist, hp.time)
             if (v.state == TrustEngine.State.STAND) continue
             out.add(
                 RawPoint(

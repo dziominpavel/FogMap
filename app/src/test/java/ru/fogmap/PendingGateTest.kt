@@ -7,8 +7,8 @@ import ru.fogmap.tracking.PendingGate
 
 /** Ворота C (trust-v2 2.1): подтверждение лагом, вето возврата, протухание. */
 class PendingGateTest {
-    private fun pt(id: Long, lat: Double, t: Long, lon: Double = 27.0) =
-        PendingGate.Item(id, lat, lon, t)
+    private fun pt(id: Long, lat: Double, t: Long, lon: Double = 27.0, state: String? = null) =
+        PendingGate.Item(id, lat, lon, t, state)
 
     @Test
     fun `ровная серия подтверждается с лагом`() {
@@ -52,15 +52,28 @@ class PendingGateTest {
     fun `протухшее ожидание ветируется`() {
         // Точка 20-минутной давности без подтверждения: статика не открывается.
         val o = pt(-1, 53.9, -8000L)
-        val old = pt(10, 53.9 + 0.0001, 0L)
-        val n1 = pt(11, 53.9 + 0.0001, 1_200_000L)
-        val n2 = pt(12, 53.9 + 0.0001, 1_208_000L)
+        val old = pt(10, 53.9 + 0.0001, 0L, state = "STAND")
+        val n1 = pt(11, 53.9 + 0.0001, 1_200_000L, state = "STAND")
+        val n2 = pt(12, 53.9 + 0.0001, 1_208_000L, state = "STAND")
         val res = PendingGate.adjudicate(listOf(old, n1, n2), o, n2)
         assertEquals(listOf(10L), res.vetoed.map { it.id })
         assertEquals(
             ru.fogmap.data.FogRepository.VETO_STALE,
             res.vetoedReasons[10L]
         )
+    }
+
+    @Test
+    fun `протухшее движение подтверждается, а не ветируется`() {
+        // fix-eco-signal-loss 2.1: после морозки процесса хвост движения
+        // ждал подтверждения дольше 10 минут — он должен открыться.
+        val o = pt(-1, 53.9, -8000L)
+        val old = pt(10, 53.9 + 0.003, 0L, state = "MOVING")
+        val n1 = pt(11, 53.9 + 0.0031, 1_200_000L, state = "MOVING")
+        val n2 = pt(12, 53.9 + 0.0032, 1_208_000L, state = "MOVING")
+        val res = PendingGate.adjudicate(listOf(old, n1, n2), o, n2)
+        assertEquals(listOf(10L), res.confirmed.map { it.id })
+        assertTrue(res.vetoed.isEmpty())
     }
 
     @Test

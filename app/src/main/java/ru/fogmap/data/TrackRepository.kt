@@ -118,16 +118,41 @@ class StatsRepository(private val db: AppDatabase) {
         return FogRepository.ECO_METRICS.associateWith { c.get("eco_${it}_$range") ?: 0 }
     }
 
-    /** Средняя длина спрямления префикса в метрах (prefix_cm / prefix_n). */
-    suspend fun ecoPrefixAvgM(range: String): Double {
+    /**
+     * Медиана префикса в метрах по гистограмме (fix-eco-signal-loss 4.4):
+     * среднее подменялось выбросами-разрывами, теперь бюджет считается
+     * по распределению. Значение — номинал бакета (50/150/350/750 м):
+     * точности хватает для порога 200 м, миграция БД не нужна.
+     */
+    suspend fun ecoPrefixMedianM(range: String): Double {
         val c = db.counterDao()
-        val cm = c.get("eco_${FogRepository.ECO_PREFIX_CM}_$range") ?: 0
-        val n = c.get("eco_${FogRepository.ECO_PREFIX_N}_$range") ?: 0
-        if (n <= 0) return 0.0
-        return cm / 100.0 / n
+        return prefixMedianFromBuckets(
+            b100 = c.get("eco_${FogRepository.ECO_PREFIX_B100_N}_$range") ?: 0,
+            b200 = c.get("eco_${FogRepository.ECO_PREFIX_B200_N}_$range") ?: 0,
+            b500 = c.get("eco_${FogRepository.ECO_PREFIX_B500_N}_$range") ?: 0,
+            bhi = c.get("eco_${FogRepository.ECO_PREFIX_BHI_N}_$range") ?: 0
+        )
     }
 
     companion object {
         fun dayRange(date: LocalDate = LocalDate.now()): String = "day_$date"
+
+        /**
+         * Медиана по бакетам префикса (fix-eco-signal-loss 4.4): бакет, где
+         * накопленная сумма впервые достигает половины распределения.
+         * Чистая функция — тестируется без БД.
+         */
+        fun prefixMedianFromBuckets(b100: Long, b200: Long, b500: Long, bhi: Long): Double {
+            val total = b100 + b200 + b500 + bhi
+            if (total <= 0) return 0.0
+            val half = total / 2 + 1
+            var acc = b100
+            if (acc >= half) return 50.0
+            acc += b200
+            if (acc >= half) return 150.0
+            acc += b500
+            if (acc >= half) return 350.0
+            return 750.0
+        }
     }
 }

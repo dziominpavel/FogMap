@@ -290,7 +290,10 @@ class TrackingService : LifecycleService() {
                 if (keep != null) trustHistory.addLast(keep)
             }
             trustHistory.addLast(hp)
-            while (trustHistory.size > TrustEngine.HISTORY_MAX) trustHistory.removeFirst()
+            // История ограничена временем (fix-eco-signal-loss 1.1), а не
+            // восемью точками: на 1 Гц окно из 8 точек покрывало 7 секунд
+            // и движение классифицировалось как статика.
+            TrustEngine.pruneHistory(trustHistory, hp.time)
             // Черный ящик: вердикт пишется всегда, включая STAND.
             // В STANDBY семплируем сыряк 1/6 (battery-eco 2.5), иначе раздуваем БД.
             val wantRaw = !ecoCached || ecoProfile != EcoGovernor.Profile.STANDBY ||
@@ -404,8 +407,12 @@ class TrackingService : LifecycleService() {
             idleBurstPending = 0
             m
         }
+        // Тишина Fused (tracking-reliability 3.1): ecoSnapshot — не признак
+        // данных (ECO_GPS_MS кладется всегда), иначе ветка no-fix была
+        // недостижима и провалы доставки 5-12 минут оставались невидимыми
+        // (fix-eco-signal-loss 3.1).
         val starved: Boolean = synchronized(buffer) {
-            buffer.isEmpty() && rejected.isEmpty() && rawBuffer.isEmpty() && ecoSnapshot.isEmpty()
+            buffer.isEmpty() && rejected.isEmpty() && rawBuffer.isEmpty()
         }
         // Эко-метрики сливаем даже в starved (иначе STAND-дни невидимы).
         if (starved) {
@@ -435,6 +442,10 @@ class TrackingService : LifecycleService() {
         val rejSize = rej.values.sum()
         var prefixCm = 0L
         var prefixN = 0L
+        var gapCm = 0L
+        var gapN = 0L
+        var prefixM: Long? = null
+        var prefixSrc: String? = null
         runCatching {
             // День уже гарантирован проверкой в начале flush (см. выше):
             // батч всегда пишется в строку текущей даты, без хвоста прошлого дня.
@@ -459,14 +470,18 @@ class TrackingService : LifecycleService() {
                 } else null
                 newCells = container.fogRepository
                     .appendPoints(trackId, batch, wakeAnchor = wakeAnchorPoint).newCells
-                // Префикс спрямления: якорь STANDBY -> first (честный, утро
-                // 21.09 давало 838 вместо 181); без якоря — прежний prev->first.
+                // Префикс спрямления (battery-eco 3): якорь STANDBY -> first.
+                // В бюджет префикса идет ТОЛЬКО пробуждение от якоря; разрыв
+                // prev->first после тишины — отдельная метрика (fix-eco-signal-loss 4.1).
                 val f = batch.first()
                 if (wakeAnchorPoint != null) {
                     val d = FogRepository.haversineM(aLat!!, aLon!!, f.lat, f.lon)
-                    if (d >= 50.0) {
+                    val kind = EcoLogPayload.prefixKind(hasAnchor = true, distanceM = d, gapS = 0)
+                    if (kind != null) {
                         prefixCm = (d * 100).toLong()
                         prefixN = 1L
+                        prefixM = d.toLong()
+                        prefixSrc = kind
                     }
                     wakeAnchorLat = null
                     wakeAnchorLon = null
@@ -475,9 +490,12 @@ class TrackingService : LifecycleService() {
                     // Пишем только значимые разрывы после тишины/STANDBY,
                     // межбатчевые 8-секундные шаги не шумят.
                     val dtS = (f.time - prevBefore.time) / 1000
-                    if (d >= 50.0 && dtS >= 60) {
-                        prefixCm = (d * 100).toLong()
-                        prefixN = 1L
+                    val kind = EcoLogPayload.prefixKind(hasAnchor = false, distanceM = d, gapS = dtS)
+                    if (kind != null) {
+                        gapCm = (d * 100).toLong()
+                        gapN = 1L
+                        prefixM = d.toLong()
+                        prefixSrc = kind
                     }
                 }
             }
@@ -488,6 +506,11 @@ class TrackingService : LifecycleService() {
             if (prefixN > 0) {
                 ecoToWrite[FogRepository.ECO_PREFIX_CM] = prefixCm
                 ecoToWrite[FogRepository.ECO_PREFIX_N] = prefixN
+                addPrefixBucket(ecoToWrite, prefixCm)
+            }
+            if (gapN > 0) {
+                ecoToWrite[FogRepository.ECO_GAP_CM] = gapCm
+                ecoToWrite[FogRepository.ECO_GAP_N] = gapN
             }
             container.fogRepository.recordEco(ecoToWrite)
         }
@@ -506,7 +529,8 @@ class TrackingService : LifecycleService() {
                     batch = batchSize, rejected = rejSize,
                     txnMs = txnStr, newCells = newCells,
                     mode = mode, profile = ecoProfile.name,
-                    ecoFix = payloadFix, ecoStand = payloadStand, ecoGpsMs = payloadGpsMs
+                    ecoFix = payloadFix, ecoStand = payloadStand, ecoGpsMs = payloadGpsMs,
+                    prefixM = prefixM, prefixSrc = prefixSrc
                 )
             )
         } else {
@@ -516,10 +540,26 @@ class TrackingService : LifecycleService() {
                     batch = batchSize, rejected = rejSize,
                     txnMs = txnStr, newCells = newCells,
                     mode = mode, profile = ecoProfile.name,
-                    ecoFix = payloadFix, ecoStand = payloadStand, ecoGpsMs = payloadGpsMs
+                    ecoFix = payloadFix, ecoStand = payloadStand, ecoGpsMs = payloadGpsMs,
+                    prefixM = prefixM, prefixSrc = prefixSrc
                 )
             )
         }
+    }
+
+    /**
+     * Бакет распределения префикса (fix-eco-signal-loss 4.3): медиана
+     * считается по гистограмме, а не как среднее, без миграции БД.
+     */
+    private fun addPrefixBucket(eco: MutableMap<String, Long>, cm: Long) {
+        val m = cm / 100.0
+        val key = when {
+            m < 100.0 -> FogRepository.ECO_PREFIX_B100_N
+            m < 200.0 -> FogRepository.ECO_PREFIX_B200_N
+            m < 500.0 -> FogRepository.ECO_PREFIX_B500_N
+            else -> FogRepository.ECO_PREFIX_BHI_N
+        }
+        eco[key] = 1L
     }
 
     /**
@@ -528,7 +568,8 @@ class TrackingService : LifecycleService() {
      * была объяснена, а не пустой. Вызывается только когда писать нечего.
      */
     private suspend fun flushIfStarved() {
-        if (System.currentTimeMillis() - lastFixTime < NO_FIX_GAP_MS) return
+        val gapMs = System.currentTimeMillis() - lastFixTime
+        if (gapMs < NO_FIX_GAP_MS) return
         val container = (application as FogMapApp).container
         val paused = runCatching {
             container.dataStore.data.first()[PrefsKeys.PAUSED] ?: false
@@ -539,10 +580,11 @@ class TrackingService : LifecycleService() {
         runCatching {
             container.fogRepository.recordRejected(mapOf(FogRepository.REJECT_NO_FIX to 1))
         }
-        // ВРЕМЕННОЕ (dev-logging): тишина Fused.
+        // ВРЕМЕННОЕ (dev-logging): тишина Fused — фактическая длительность,
+        // а не порог срабатывания (fix-eco-signal-loss 3.1/dev-logging).
         DevLog.i(
             "TRACK", "no_fix",
-            mapOf("gap_ms" to NO_FIX_GAP_MS, "mode" to ecoModeTag(), "profile" to ecoProfile.name)
+            EcoLogPayload.noFixPayload(gapMs, ecoModeTag(), ecoProfile.name)
         )
     }
 
