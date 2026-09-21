@@ -19,6 +19,8 @@ object EcoLogPayload {
     const val KEY_FROM_PROFILE = "from_profile"
     const val KEY_WAKE_M = "wake_m"
     const val KEY_VERDICT = "verdict"
+    /** Источник пробуждения (wake-balance-parking 4.1): gps/motion/wifi/timeout/restart. */
+    const val KEY_SOURCE = "source"
 
     /** Нет якоря / неприменимо (wake_m): число, а не null — парсер проще. */
     const val NO_ANCHOR_M = -1L
@@ -50,12 +52,14 @@ object EcoLogPayload {
         profile: String,
         fromProfile: String,
         wakeM: Long?,
-        verdict: String?
+        verdict: String?,
+        source: String? = null
     ): Map<String, Any?> = mapOf(
         KEY_MODE to mode,
         KEY_PROFILE to profile,
         KEY_FROM_PROFILE to fromProfile,
         KEY_WAKE_M to (wakeM ?: NO_ANCHOR_M),
-        KEY_VERDICT to (verdict ?: "?")
+        KEY_VERDICT to (verdict ?: "?"),
+        KEY_SOURCE to (source ?: EcoGovernor.WakeSource.GPS)
     )
 }

@@ -379,11 +379,13 @@ fun HistoryDetailScreen(nav: NavController, trackId: Long) {
                         val ecoFix = dayEco["fix"] ?: 0
                         val ecoStand = dayEco["stand"] ?: 0
                         val ecoGpsMs = dayEco["gps_ms"] ?: 0
+                        val ecoIdle = dayEco["idle_burst"] ?: 0
                         if (ecoFix > 0 || ecoStand > 0) {
                             Text(
                                 "Эко: фиксов $ecoFix, STAND $ecoStand, " +
                                     "GPS ${"%.1f".format(ecoGpsMs / 3600000.0)} ч, " +
-                                    "префикс ${"%.0f".format(dayPrefixAvgM)} м",
+                                    "префикс ${"%.0f".format(dayPrefixAvgM)} м" +
+                                    if (ecoIdle > 0) ", холостых BURST $ecoIdle" else "",
                                 style = MaterialTheme.typography.bodySmall
                             )
                             if (dayPrefixAvgM > 200.0) {

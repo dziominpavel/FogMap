@@ -3,7 +3,9 @@ package ru.fogmap.data
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.doublePreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -20,6 +22,13 @@ object PrefsKeys {
     val ECO_MODE = booleanPreferencesKey("eco_mode")
     /** Последний эко-профиль (battery-eco 2.4): ACTIVE/STANDBY/BURST для рестарта. */
     val ECO_PROFILE = stringPreferencesKey("eco_profile")
+    /**
+     * Якорь STANDBY (wake-balance-parking 2.1): переживает убийство/ребут,
+     * первое смещение после рестарта считается от него.
+     */
+    val ANCHOR_LAT = doublePreferencesKey("standby_anchor_lat")
+    val ANCHOR_LON = doublePreferencesKey("standby_anchor_lon")
+    val ANCHOR_TIME = longPreferencesKey("standby_anchor_time")
 }
 
 object ThemeModes {
@@ -69,6 +78,15 @@ class SettingsRepository(
     suspend fun setEcoProfile(v: String) {
         require(v in setOf(EcoProfiles.ACTIVE, EcoProfiles.STANDBY, EcoProfiles.BURST))
         store.edit { it[PrefsKeys.ECO_PROFILE] = v }
+    }
+
+    /** Якорь STANDBY (wake-balance-parking 2.1): persist + восстановление. */
+    suspend fun setStandbyAnchor(lat: Double, lon: Double, timeMs: Long) {
+        store.edit {
+            it[PrefsKeys.ANCHOR_LAT] = lat
+            it[PrefsKeys.ANCHOR_LON] = lon
+            it[PrefsKeys.ANCHOR_TIME] = timeMs
+        }
     }
 
     suspend fun resetAll(fog: FogRepository) = fog.clearAll()

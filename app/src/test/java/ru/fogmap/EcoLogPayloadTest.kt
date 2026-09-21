@@ -62,4 +62,26 @@ class EcoLogPayloadTest {
         assertEquals(EcoLogPayload.NO_ANCHOR_M, p[EcoLogPayload.KEY_WAKE_M])
         assertEquals("?", p[EcoLogPayload.KEY_VERDICT])
     }
+
+    @Test
+    fun `eco_state несет источник пробуждения без координат`() {
+        val p = EcoLogPayload.ecoStatePayload(
+            mode = "eco", profile = "BURST",
+            fromProfile = "STANDBY", wakeM = 150L, verdict = "WAKE",
+            source = "motion"
+        )
+        assertEquals("motion", p[EcoLogPayload.KEY_SOURCE])
+        DevLog.buildPayloadJson(p)
+    }
+
+    @Test
+    fun `источник по умолчанию gps для старых вызовов`() {
+        val p = EcoLogPayload.ecoStatePayload(
+            mode = "eco", profile = "BURST",
+            fromProfile = "STANDBY", wakeM = 150L, verdict = "MOVING"
+        )
+        assertEquals("gps", p[EcoLogPayload.KEY_SOURCE])
+        val kl = EcoLogPayload.KEY_SOURCE.lowercase()
+        assertTrue(!kl.contains("lat") && !kl.contains("lon"))
+    }
 }

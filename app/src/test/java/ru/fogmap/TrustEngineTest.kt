@@ -235,4 +235,45 @@ class TrustEngineTest {
         assertEquals(TrustEngine.TRUST_START, v.trust)
         assertTrue(v.openFog)
     }
+
+    @Test
+    fun `утренний выезд 838м после ночи — кандидат ворот C без jump`() {
+        // wake-balance-parking 3.1: ночь в STANDBY, первый fix в 838 м
+        // с чистым accuracy — не вечный SUSPECT, счетчик jump молчит.
+        val stand = (0 until 6).map { pt(53.9) }
+        val wake = pt(53.9 + 0.0075, dtS = 2000) // ~830 м через 33 мин
+        val verdicts = run(stand + listOf(wake))
+        val v = verdicts.last()
+        assertEquals(TrustEngine.State.MOVING, v.state)
+        assertTrue(v.openFog)
+        assertNull(v.countReject)
+        assertEquals(TrustEngine.TRUST_START, v.trust)
+    }
+
+    @Test
+    fun `вторая точка пачки сразу после пробуждения — кандидат а не jump`() {
+        // wake-balance-parking 3.1: грубый STANDBY-фикс против точного GPS
+        // в BURST (52 м за доли секунды, implied артефактно огромен) —
+        // продолжение пробуждения, а не выброс.
+        val stand = (0 until 6).map { pt(53.9) }
+        val coarse = pt(53.9 + 0.0075, dtS = 2000)
+        val gps = pt(53.9 + 0.0075 + 0.00047, dtS = 1) // +52 м за 1 с
+        val verdicts = run(stand + listOf(coarse, gps))
+        val v = verdicts.last()
+        assertEquals(TrustEngine.State.MOVING, v.state)
+        assertTrue(v.openFog)
+        assertNull(v.countReject)
+    }
+
+    @Test
+    fun `дальний выброс после тишины остается SUSPECT`() {
+        // 4 км — аэропорт, а не утренний выезд: телепорт-гейт сильнее льготы.
+        val stand = (0 until 6).map { pt(53.9) }
+        val far = pt(53.9 + 0.036, dtS = 2000) // +4 км
+        val verdicts = run(stand + listOf(far))
+        val v = verdicts.last()
+        assertEquals(TrustEngine.State.SUSPECT, v.state)
+        assertFalse(v.openFog)
+        assertEquals(FogRepository.REJECT_JUMP, v.countReject)
+    }
 }

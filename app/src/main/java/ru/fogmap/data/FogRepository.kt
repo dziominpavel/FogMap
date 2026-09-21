@@ -51,7 +51,8 @@ class FogRepository(private val db: AppDatabase) {
     suspend fun appendPoints(
         trackId: Long,
         points: List<RawPoint>,
-        date: LocalDate = LocalDate.now()
+        date: LocalDate = LocalDate.now(),
+        wakeAnchor: RawPoint? = null
     ): BatchResult {
         if (points.isEmpty()) return BatchResult(0, 0.0)
         var newBase = 0
@@ -59,7 +60,9 @@ class FogRepository(private val db: AppDatabase) {
         db.withTransaction {
             // 0. Хвост прошлого батча — для честной дистанции между flush (иначе
             // межбатчевые отрезки терялись бы, трек врал бы в меньшую сторону).
-            val prev = db.trackDao().lastPoint(trackId)
+            // Якорь пробуждения (wake-balance-parking 2.2): первый flush после
+            // выхода шьется от якоря STANDBY, а не от пустого хвоста дня.
+            val prev = wakeAnchor ?: db.trackDao().lastPoint(trackId)?.toRaw()
             // 1. Точки в БД пачкой — сырые, с полным вердиктом (ворота разделены:
             // линия трека сохраняется всегда). fogOpened: кандидаты ворот C — 0
             // (откроются подтверждением ниже), вердиктные вето — 2 (навсегда).
@@ -74,10 +77,10 @@ class FogRepository(private val db: AppDatabase) {
             // 2. Ворота C: разбираем хвост ожидания (старые pending + свежий
             // батч) — подтвержденные открывают туман, заветированные закрыты.
             // Последние LAG точек всегда остаются ждать будущего.
-            newBase = confirmPending(trackId, points)
+            newBase = confirmPending(trackId, points, wakeAnchor)
             // 3. Дистанция по гаверсинусу: хвост + внутри батча, отрезки
             // с недоверенными концами пропускаются (прыжок не раздувает км).
-            distance = batchDistance(points, prev?.toRaw())
+            distance = batchDistance(points, prev)
             // 3б. Честная статистика трека — в той же транзакции (баг вечных 0 км).
             db.trackDao().addStats(trackId, distance, points.size, points.last().time)
             // 4. Счетчики (материализованные, ЧП-5): дистанция/время — по записи,
@@ -100,16 +103,23 @@ class FogRepository(private val db: AppDatabase) {
      * Возвращает число новых базовых эквивалентов для счетчиков.
      * Все в вызывающей транзакции.
      */
-    private suspend fun confirmPending(trackId: Long, batch: List<RawPoint>): Int {
+    private suspend fun confirmPending(
+        trackId: Long, batch: List<RawPoint>, wakeAnchor: RawPoint? = null
+    ): Int {
         val tail = db.trackDao().unopenedTail(trackId, PendingGate.TAIL_LIMIT)
         if (tail.isEmpty()) return 0
         val anchorEnt = db.trackDao().lastOpenedPoint(trackId)
+        // Якорь пробуждения — запасной якорь коридора, пока туман дня еще
+        // ничего не открыл (первый flush после выхода).
+        val anchorRaw = anchorEnt?.toRaw() ?: wakeAnchor
         val newest = batch.last()
+        val anchorItem = anchorEnt?.let { PendingGate.Item(-1, it.lat, it.lon, it.time) }
+            ?: wakeAnchor?.let { PendingGate.Item(-1, it.lat, it.lon, it.time) }
         val res = PendingGate.adjudicate(
             pendingAsc = tail.reversed().map {
                 PendingGate.Item(it.id, it.lat, it.lon, it.time)
             },
-            anchor = anchorEnt?.let { PendingGate.Item(-1, it.lat, it.lon, it.time) },
+            anchor = anchorItem,
             newest = PendingGate.Item(-1, newest.lat, newest.lon, newest.time)
         )
         if (res.vetoed.isNotEmpty()) {
@@ -124,7 +134,7 @@ class FogRepository(private val db: AppDatabase) {
         val byId = tail.associateBy { it.id }
         val confirmedRaw = res.confirmed.mapNotNull { byId[it.id]?.toRaw() }
             .map { it.copy(openFog = true) }
-        val open = openBaseCells(confirmedRaw, anchorEnt?.toRaw())
+        val open = openBaseCells(confirmedRaw, anchorRaw)
         val fresh = filterCovered(open, fetchAncestors(open))
         val n = insertChunked(fresh)
         promoteCascade(fresh)
@@ -284,8 +294,11 @@ class FogRepository(private val db: AppDatabase) {
         const val ECO_FLUSH = "flush"
         const val ECO_PREFIX_CM = "prefix_cm"
         const val ECO_PREFIX_N = "prefix_n"
+        /** Холостые BURST без подтверждения движения (wake-balance-parking 4.1). */
+        const val ECO_IDLE_BURST = "idle_burst"
         val ECO_METRICS = listOf(
-            ECO_FIX, ECO_STAND, ECO_GPS_MS, ECO_FLUSH, ECO_PREFIX_CM, ECO_PREFIX_N
+            ECO_FIX, ECO_STAND, ECO_GPS_MS, ECO_FLUSH, ECO_PREFIX_CM, ECO_PREFIX_N,
+            ECO_IDLE_BURST
         )
 
         /** Разрезы счетчиков: all + день + неделя (единые для всех метрик). */

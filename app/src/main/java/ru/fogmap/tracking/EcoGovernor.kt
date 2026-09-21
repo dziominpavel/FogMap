@@ -43,6 +43,28 @@ object EcoGovernor {
     /** Дебаунс ACTIVE->STANDBY против дребезга (BURST-переходы без дебаунса). */
     const val STANDBY_DEBOUNCE_MS = 30_000L
 
+    /**
+     * Сон после холостого BURST (wake-balance-parking 4.2): GPS-джиттер
+     * парковки не должен будить каждые 2 мин. Пока сон активен, STAND-шевеление
+     * по GPS игнорируется — будят только MOVING-вердикт, motion или WiFi.
+     */
+    const val POST_IDLE_SLEEP_MS = 180_000L
+
+    /** В холостом сне GPS-будят только смещения от 200 м (вето-минимум ворот C). */
+    const val IDLE_SLEEP_WAKE_M = 200.0
+
+    /**
+     * Источник пробуждения для eco_state (wake-balance-parking 4.1):
+     * строковый контракт лога, координат нет.
+     */
+    object WakeSource {
+        const val GPS = "gps"
+        const val MOTION = "motion"
+        const val WIFI = "wifi"
+        const val TIMEOUT = "timeout"
+        const val RESTART = "restart"
+    }
+
     fun paramsFor(p: Profile): FusedParams = when (p) {
         Profile.ACTIVE -> FusedParams(ACTIVE_INTERVAL_MS, ACTIVE_MIN_MS, ACTIVE_DIST_M, Priority.PRIORITY_HIGH_ACCURACY)
         Profile.STANDBY -> FusedParams(STANDBY_INTERVAL_MS, STANDBY_MIN_MS, STANDBY_DIST_M, Priority.PRIORITY_BALANCED_POWER_ACCURACY)

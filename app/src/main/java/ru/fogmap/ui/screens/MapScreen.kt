@@ -56,6 +56,7 @@ import com.yandex.mapkit.map.CameraPosition
 import com.yandex.mapkit.map.CameraUpdateReason
 import com.yandex.mapkit.map.IconStyle
 import com.yandex.mapkit.mapview.MapView
+import com.yandex.mapkit.user_location.UserLocationIconChanged
 import com.yandex.mapkit.user_location.UserLocationLayer
 import com.yandex.mapkit.user_location.UserLocationObjectListener
 import com.yandex.mapkit.user_location.UserLocationView
@@ -200,6 +201,10 @@ fun MapScreen(nav: NavController) {
         // свой дефолтный значок. Масштаб 1.5 от базы 12dp: красное ядро ~18dp
         // на экране. Провайдер и стиль кешируем — применяются на каждое
         // обновление объекта, иначе слой возвращает свой дефолт.
+        // (always-red-cursor): тем же растром красим ОБЕ плейсмарки слоя —
+        // SDK сам переключает PIN (покой) / ARROW (движение), прятать стрелку
+        // бесполезно: переход в ARROW возвращает ей видимость и выводит
+        // желтый дефолт. Круг симметричен, вращение иконки курсом нейтрально.
         val pinProvider = remember(context) {
             runCatching { ImageProvider.fromResource(context, R.drawable.ic_my_location) }
                 .getOrNull()
@@ -208,11 +213,33 @@ fun MapScreen(nav: NavController) {
             IconStyle().setAnchor(PointF(0.5f, 0.5f)).setScale(1.5f)
         }
         fun styleLocationView(view: UserLocationView) {
-            val provider = pinProvider ?: return
-            runCatching { view.pin.setIcon(provider, pinStyle) }
-            // Стрелки и круга точности нет по спеку: только красный кружок.
-            runCatching { view.arrow.isVisible = false }
+            // ВРЕМЕННОЕ (dev-logging): явные неуспехи вместо молчаливого catch-all.
+            if (runCatching { view.isValid() }.getOrDefault(false).not()) {
+                DevLog.w("UI", "user_location", mapOf("event" to "style_skipped", "reason" to "invalid_view"))
+                return
+            }
+            val provider = pinProvider
+            if (provider == null) {
+                DevLog.w("UI", "user_location", mapOf("event" to "style_failed", "part" to "provider_null"))
+            } else {
+                runCatching {
+                    view.pin.setIcon(provider, pinStyle)
+                    view.pin.isVisible = true
+                }.onFailure {
+                    DevLog.w("UI", "user_location", mapOf("event" to "style_failed", "part" to "pin"))
+                }
+                runCatching {
+                    view.arrow.setIcon(provider, pinStyle)
+                    view.arrow.isVisible = true
+                }.onFailure {
+                    DevLog.w("UI", "user_location", mapOf("event" to "style_failed", "part" to "arrow"))
+                }
+            }
+            // Круг точности скрыт всегда, независимо от провайдера иконок.
             runCatching { view.accuracyCircle.isVisible = false }
+                .onFailure {
+                    DevLog.w("UI", "user_location", mapOf("event" to "style_failed", "part" to "accuracy"))
+                }
         }
         val locationListener: UserLocationObjectListener = remember(context, userLocationLayer) {
             object : UserLocationObjectListener {
@@ -237,8 +264,13 @@ fun MapScreen(nav: NavController) {
                 override fun onObjectUpdated(view: UserLocationView, event: ObjectEvent) {
                     liveView = view
                     // Стиль на каждое обновление: слой может пересоздавать виды
-                    // и возвращать свой дефолт (зелень) вместо нашей иконки.
+                    // и возвращать свой дефолт вместо нашей иконки. Тип иконки
+                    // логируем только на переходах PIN/ARROW, иначе шторм строк.
+                    val iconType = (event as? UserLocationIconChanged)?.iconType?.name
                     styleLocationView(view)
+                    if (iconType != null) {
+                        DevLog.d("UI", "user_location", mapOf("event" to "icon_changed", "icon" to iconType))
+                    }
                     pullLivePosition()?.let {
                         liveLatLon = it
                         liveLastMs = SystemClock.elapsedRealtime()
@@ -436,7 +468,12 @@ fun MapScreen(nav: NavController) {
             (nowTickMs - liveLastMs) > TrustEngine.SILENCE_RESET_S * 1000L
         LaunchedEffect(liveView, isLiveStale) {
             val view = liveView ?: return@LaunchedEffect
-            runCatching { view.pin.opacity = if (isLiveStale) 0.5f else 1f }
+            if (runCatching { view.isValid() }.getOrDefault(false).not()) return@LaunchedEffect
+            // (always-red-cursor): приглушаем обе иконки — видна та,
+            // которую SDK выбрал режимом PIN/ARROW.
+            val opacity = if (isLiveStale) 0.5f else 1f
+            runCatching { view.pin.opacity = opacity }
+            runCatching { view.arrow.opacity = opacity }
         }
         // Дырки в пикселях: из памяти, проекция worldToScreen в UI-потоке.
         // Ключи — клетки + зум + target: иначе при пане одним пальцем

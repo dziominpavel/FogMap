@@ -78,6 +78,14 @@ object TrustEngine {
      * доверие в стартовое, первая точка туман не открывает.
      */
     const val SILENCE_RESET_S = 120L
+    /**
+     * Первая точка после долгой тишины (wake-balance-parking 3.1): честный
+     * утренний выезд 100–1500 м с чистым accuracy — кандидат ворот C
+     * (откроется подтверждением следующих), а не вечный SUSPECT.
+     * Дальние выбросы (4 км — аэропорт) по-прежнему ловит телепорт-гейт.
+     */
+    const val WAKE_FIRST_MIN_M = 100.0
+    const val WAKE_FIRST_MAX_M = 1500.0
 
     enum class State { STAND, MOVING, SUSPECT }
 
@@ -143,6 +151,44 @@ object TrustEngine {
                 return afterSilence(
                     Verdict(State.STAND, TRUST_STAND, false, null, PrevState(State.STAND, TRUST_STAND)),
                     dtS
+                )
+            }
+        }
+
+        // 2в. Выход после долгой тишины (wake-balance-parking 3.1): первая
+        // движущаяся точка с правдоподобным наземным профилем — кандидат
+        // ворот C со стартовым доверием, а не вечное вето по старой медиане.
+        // Утро 21.09: 838 м после ночи уходило в SUSPECT/jump, хотя следующие
+        // точки подтверждали движение. Дальние выбросы (>1500 м) пропускаем
+        // дальше на телепорт-гейт.
+        if (dtS > SILENCE_RESET_S &&
+            shiftM >= WAKE_FIRST_MIN_M && shiftM <= WAKE_FIRST_MAX_M &&
+            new.acc <= LocationFilter.MAX_ACCURACY_M
+        ) {
+            return Verdict(
+                State.MOVING, TRUST_START, true, null,
+                PrevState(State.MOVING, TRUST_START),
+                resetHistory = true
+            )
+        }
+        // 2г. Продолжение пробуждения (wake-balance-parking 3.1): вторая точка
+        // BURST-пачки через доли секунды после первой (грубый STANDBY-фикс
+        // против точного GPS — implied артефактно огромен, скорость Fused
+        // при этом автомобильная). Судить ее по стояночной медиане нельзя:
+        // в пределах телепорта и с чистым accuracy — кандидат ворот C.
+        // Проверка «только что проснулись»: предпоследний разрыв — тишина.
+        if (history.size >= 2) {
+            val a = history[history.size - 2]
+            val b = history.last()
+            val gapS = ((b.time - a.time) / 1000).coerceAtLeast(1)
+            if (gapS > SILENCE_RESET_S &&
+                shiftM <= TELEPORT_M &&
+                new.acc <= LocationFilter.MAX_ACCURACY_M
+            ) {
+                return Verdict(
+                    State.MOVING, TRUST_START, true, null,
+                    PrevState(State.MOVING, TRUST_START),
+                    resetHistory = true
                 )
             }
         }
