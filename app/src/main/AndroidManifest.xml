@@ -46,8 +46,7 @@
         <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"
             android:foregroundServiceType="location"
-            tools:node="merge"
-            tools:replace="android:foregroundServiceType" />
+            tools:node="merge" />
 
         <receiver
             android:name=".tracking.BootReceiver"
