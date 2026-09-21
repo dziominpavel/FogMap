@@ -123,8 +123,10 @@ class StatsRepository(private val db: AppDatabase) {
      * среднее подменялось выбросами-разрывами, теперь бюджет считается
      * по распределению. Значение — номинал бакета (50/150/350/750 м):
      * точности хватает для порога 200 м, миграция БД не нужна.
+     * `null` — данных нет (пустые бакеты): карточка показывает «нет данных»,
+     * а не ложный ноль (fix-import-metrics 3.3).
      */
-    suspend fun ecoPrefixMedianM(range: String): Double {
+    suspend fun ecoPrefixMedianM(range: String): Double? {
         val c = db.counterDao()
         return prefixMedianFromBuckets(
             b100 = c.get("eco_${FogRepository.ECO_PREFIX_B100_N}_$range") ?: 0,
@@ -140,11 +142,11 @@ class StatsRepository(private val db: AppDatabase) {
         /**
          * Медиана по бакетам префикса (fix-eco-signal-loss 4.4): бакет, где
          * накопленная сумма впервые достигает половины распределения.
-         * Чистая функция — тестируется без БД.
+         * Чистая функция — тестируется без БД; `null` = данных нет.
          */
-        fun prefixMedianFromBuckets(b100: Long, b200: Long, b500: Long, bhi: Long): Double {
+        fun prefixMedianFromBuckets(b100: Long, b200: Long, b500: Long, bhi: Long): Double? {
             val total = b100 + b200 + b500 + bhi
-            if (total <= 0) return 0.0
+            if (total <= 0) return null
             val half = total / 2 + 1
             var acc = b100
             if (acc >= half) return 50.0

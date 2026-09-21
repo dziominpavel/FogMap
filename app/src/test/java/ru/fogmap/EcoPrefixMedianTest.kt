@@ -1,6 +1,7 @@
 package ru.fogmap
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import ru.fogmap.data.FogRepository
@@ -12,29 +13,30 @@ import ru.fogmap.data.StatsRepository
  */
 class EcoPrefixMedianTest {
     @Test
-    fun `пустая гистограмма — ноль`() {
-        assertEquals(0.0, StatsRepository.prefixMedianFromBuckets(0, 0, 0, 0), 0.001)
+    fun `пустая гистограмма — нет данных, а не ноль`() {
+        // fix-import-metrics 3.3: ложный ноль на карточке запрещен.
+        assertNull(StatsRepository.prefixMedianFromBuckets(0, 0, 0, 0))
     }
 
     @Test
     fun `перевес коротких префиксов держит медиану в бюджете`() {
         // 3 коротких и 1 разрыв: среднее уехало бы, медиана — 50 м.
-        assertEquals(50.0, StatsRepository.prefixMedianFromBuckets(3, 0, 0, 1), 0.001)
+        assertEquals(50.0, StatsRepository.prefixMedianFromBuckets(3, 0, 0, 1)!!, 0.001)
     }
 
     @Test
     fun `медиана во втором бакете — еще бюджет`() {
-        assertEquals(150.0, StatsRepository.prefixMedianFromBuckets(2, 2, 0, 0), 0.001)
+        assertEquals(150.0, StatsRepository.prefixMedianFromBuckets(2, 2, 0, 0)!!, 0.001)
     }
 
     @Test
     fun `половина длинных — превышение бюджета`() {
-        assertEquals(350.0, StatsRepository.prefixMedianFromBuckets(1, 1, 2, 0), 0.001)
+        assertEquals(350.0, StatsRepository.prefixMedianFromBuckets(1, 1, 2, 0)!!, 0.001)
     }
 
     @Test
     fun `один разрыв на дне гистограммы`() {
-        assertEquals(750.0, StatsRepository.prefixMedianFromBuckets(0, 0, 0, 1), 0.001)
+        assertEquals(750.0, StatsRepository.prefixMedianFromBuckets(0, 0, 0, 1)!!, 0.001)
     }
 
     @Test

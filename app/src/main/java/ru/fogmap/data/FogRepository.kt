@@ -58,11 +58,15 @@ class FogRepository(private val db: AppDatabase) {
         var newBase = 0
         var distance = 0.0
         db.withTransaction {
-            // 0. Хвост прошлого батча — для честной дистанции между flush (иначе
-            // межбатчевые отрезки терялись бы, трек врал бы в меньшую сторону).
-            // Якорь пробуждения (wake-balance-parking 2.2): первый flush после
-            // выхода шьется от якоря STANDBY, а не от пустого хвоста дня.
-            val prev = wakeAnchor ?: db.trackDao().lastPoint(trackId)?.toRaw()
+            // 0. План батча (fix-import-metrics 1.3): дистанция — ТОЛЬКО от
+            // последней записанной точки дня; якорь пробуждения (wake-balance
+            // 2.2) — инструмент коридора тумана. Его хорда «якорь -> первая
+            // точка» в дистанцию не входит (21.09: 19.59 км против 11.24 км
+            // по сохранённым точкам).
+            val plan = planBatch(
+                dayTail = db.trackDao().lastPoint(trackId)?.toRaw(),
+                wakeAnchor = wakeAnchor
+            )
             // 1. Точки в БД пачкой — сырые, с полным вердиктом (ворота разделены:
             // линия трека сохраняется всегда). fogOpened: кандидаты ворот C — 0
             // (откроются подтверждением ниже), вердиктные вето — 2 (навсегда).
@@ -77,10 +81,10 @@ class FogRepository(private val db: AppDatabase) {
             // 2. Ворота C: разбираем хвост ожидания (старые pending + свежий
             // батч) — подтвержденные открывают туман, заветированные закрыты.
             // Последние LAG точек всегда остаются ждать будущего.
-            newBase = confirmPending(trackId, points, wakeAnchor)
-            // 3. Дистанция по гаверсинусу: хвост + внутри батча, отрезки
+            newBase = confirmPending(trackId, points, plan.corridorAnchor)
+            // 3. Дистанция по гаверсинусу: хвост дня + внутри батча, отрезки
             // с недоверенными концами пропускаются (прыжок не раздувает км).
-            distance = batchDistance(points, prev)
+            distance = batchDistance(points, plan.distanceTail)
             // 3б. Честная статистика трека — в той же транзакции (баг вечных 0 км).
             db.trackDao().addStats(trackId, distance, points.size, points.last().time)
             // 4. Счетчики (материализованные, ЧП-5): дистанция/время — по записи,
@@ -169,6 +173,23 @@ class FogRepository(private val db: AppDatabase) {
             for ((key, n) in ecoKeys(metrics, rangeSuffixesFor(date))) {
                 counters.addOrInsert(key, n)
             }
+        }
+    }
+
+    /**
+     * Восстановление эко-счётчиков при импорте (fix-import-metrics 3.2):
+     * снимок `counters.json` переносится как есть — эко-метрики суть свойства
+     * живой сессии (каденс, GPS-время, якоря пробуждений), из прореженного
+     * raw их не пересчитать. Таблица counters перед rebuild очищена, поэтому
+     * значения не складываются с живыми; старый снимок без новых ключей
+     * просто не даёт этих метрик («нет данных», а не нули).
+     */
+    suspend fun restoreEcoCounters(snapshot: Map<String, Long>) {
+        val eco = ecoCountersFromSnapshot(snapshot)
+        if (eco.isEmpty()) return
+        db.withTransaction {
+            val counters = db.counterDao()
+            for ((key, value) in eco) counters.addOrInsert(key, value)
         }
     }
 
@@ -414,11 +435,36 @@ class FogRepository(private val db: AppDatabase) {
             val out = ArrayList<Pair<String, Long>>(metrics.size * suffixes.size)
             for (s in suffixes) {
                 for ((metric, n) in metrics) {
-                    if (n > 0) out.add("eco_${metric}_$s" to n)
+                    if (n > 0) out.add("$ECO_KEY_PREFIX${metric}_$s" to n)
                 }
             }
             return out
         }
+
+        /** Префикс ключей эко-метрик в таблице counters (единый контракт). */
+        const val ECO_KEY_PREFIX = "eco_"
+
+        /**
+         * Ключи снимка, восстанавливаемые при импорте (fix-import-metrics 3.2):
+         * только эко-метрики; геометрия пересчитывается из raw. Чистая —
+         * тестируется без БД; старый снимок без новых ключей даёт меньше метрик
+         * (карточка покажет «нет данных», а не нули).
+         */
+        internal fun ecoCountersFromSnapshot(snapshot: Map<String, Long>): Map<String, Long> =
+            snapshot.filterKeys {
+                it.startsWith(ECO_KEY_PREFIX) && it.length > ECO_KEY_PREFIX.length
+            }
+
+        /**
+         * План батча (fix-import-metrics 1.3): дистанция — только от хвоста
+         * дня, якорь пробуждения — только коридор тумана и метрика префикса.
+         * Контракт закреплён здесь, чтобы хорда якоря не вернулась в дистанцию.
+         * Чистая — тестируется без БД.
+         */
+        data class BatchPlan(val distanceTail: RawPoint?, val corridorAnchor: RawPoint?)
+
+        fun planBatch(dayTail: RawPoint?, wakeAnchor: RawPoint?): BatchPlan =
+            BatchPlan(distanceTail = dayTail, corridorAnchor = wakeAnchor)
 
         /**
          * Чистая дистанция батча: отрезок от хвоста прошлого батча (если он

@@ -55,6 +55,20 @@ class TrackStatsTest {
     }
 
     @Test
+    fun `дистанция берет хвост дня, а якорь уходит в коридор`() {
+        // fix-import-metrics 1.3: хорда wake-якоря не попадает в дистанцию.
+        val dayTail = pt(55.0, time = 0)
+        val anchor = pt(54.9, time = 0) // «сон» в 11 км от хвоста дня
+        val plan = FogRepository.planBatch(dayTail = dayTail, wakeAnchor = anchor)
+        assertTrue(plan.distanceTail === dayTail)
+        assertTrue(plan.corridorAnchor === anchor)
+        // Дистанция от хвоста дня (~111 м), а не от якоря (~11 км).
+        val points = listOf(pt(55.001, time = 8000))
+        val d = FogRepository.batchDistance(points, plan.distanceTail)
+        assertTrue("ожидалось ~111 м, получено $d", d > 110 && d < 113)
+    }
+
+    @Test
     fun `ключи счетчиков отбросов по схеме rejected-reason-suffix`() {
         val keys = FogRepository.rejectedKeys(
             mapOf("accuracy" to 3, "speed" to 0, "mock" to 1),

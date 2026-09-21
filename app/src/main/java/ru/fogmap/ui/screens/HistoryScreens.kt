@@ -295,7 +295,7 @@ fun HistoryDetailScreen(nav: NavController, trackId: Long) {
     var dayRejected by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
     // Эко-метрики дня (battery-eco 1.3/1.4): режим и медиана префикса.
     var dayEco by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
-    var dayPrefixMedianM by remember { mutableStateOf(0.0) }
+    var dayPrefixMedianM by remember { mutableStateOf<Double?>(null) }
     val points = pointEnts.map { Point(it.lat, it.lon) }
     var renameOpen by remember { mutableStateOf(false) }
     var deleteOpen by remember { mutableStateOf(false) }
@@ -385,10 +385,17 @@ fun HistoryDetailScreen(nav: NavController, trackId: Long) {
                         val gapN = dayEco["gap_n"] ?: 0
                         val gapCm = dayEco["gap_cm"] ?: 0
                         if (ecoFix > 0 || ecoStand > 0) {
+                            val median = dayPrefixMedianM
                             Text(
                                 "Эко: фиксов $ecoFix, STAND $ecoStand, " +
                                     "GPS ${"%.1f".format(ecoGpsMs / 3600000.0)} ч, " +
-                                    "медиана префикса ${"%.0f".format(dayPrefixMedianM)} м" +
+                                    (
+                                        if (median != null) {
+                                            "медиана префикса ${"%.0f".format(median)} м"
+                                        } else {
+                                            "медиана префикса: нет данных"
+                                        }
+                                        ) +
                                     if (ecoIdle > 0) ", холостых BURST $ecoIdle" else "",
                                 style = MaterialTheme.typography.bodySmall
                             )
@@ -399,7 +406,7 @@ fun HistoryDetailScreen(nav: NavController, trackId: Long) {
                                     style = MaterialTheme.typography.bodySmall
                                 )
                             }
-                            if (dayPrefixMedianM > 200.0) {
+                            if (median != null && median > 200.0) {
                                 Text(
                                     "Медиана префикса выше бюджета 200 м",
                                     style = MaterialTheme.typography.bodySmall,

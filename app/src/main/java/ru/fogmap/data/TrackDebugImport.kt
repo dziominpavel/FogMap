@@ -15,19 +15,24 @@ import java.util.zip.ZipInputStream
  *
  * Правила: версия meta НИКОГДА не блокирует импорт, stored вердикты
  * игнорируются — raw всегда перепроживается текущим
- * LocationFilter/TrustEngine/PendingGate. Snapshot fog/counters из файла
- * не используется: туман и счетчики пересчитываются с нуля.
+ * LocationFilter/TrustEngine/PendingGate. Геометрия (точки, туман,
+ * дистанция, время, отбросы, треки) пересчитывается с нуля; эко-метрики
+ * дня восстанавливаются из `counters.json` выгрузки (fix-import-metrics 3.2):
+ * из прореженного raw их не пересчитать (семплирование 1/6, якорей нет).
  */
 object TrackDebugImport {
     data class ParsedFile(
         val days: Map<String, List<RawFixEntity>>,
-        val metaFormat: Int?
+        val metaFormat: Int?,
+        /** Снимок counters.json (fix-import-metrics 3.1): источник эко-метрик. */
+        val counters: Map<String, Long> = emptyMap()
     )
 
     /** Tolerant-парсер: неизвестные поля и версии принимаются, битый JSON строки пропускается. */
     fun parseZip(bytes: ByteArray): ParsedFile {
         val days = HashMap<String, MutableList<RawFixEntity>>()
         var metaFormat: Int? = null
+        var counters: Map<String, Long> = emptyMap()
         ZipInputStream(ByteArrayInputStream(bytes)).use { zin ->
             while (true) {
                 val entry = zin.getNextEntry() ?: break
@@ -36,6 +41,7 @@ object TrackDebugImport {
                 zin.closeEntry()
                 when {
                     name == "meta.json" -> metaFormat = parseFormat(content)
+                    name == "counters.json" -> counters = parseCounters(content)
                     name.startsWith("days/") && name.endsWith(".jsonl") -> {
                         val day = name.removePrefix("days/").removeSuffix(".jsonl")
                         val rows = days.getOrPut(day) { ArrayList() }
@@ -44,11 +50,31 @@ object TrackDebugImport {
                             runCatching { parseRawLine(day, line) }.getOrNull()?.let { rows.add(it) }
                         }
                     }
-                    else -> Unit // fog.jsonl / counters.json: rebuild идет из raw, игнорируем
+                    else -> Unit // fog.jsonl: rebuild идет из raw, геометрия пересчитывается
                 }
             }
         }
-        return ParsedFile(days, metaFormat)
+        return ParsedFile(days, metaFormat, counters)
+    }
+
+    /**
+     * Tolerant-парсер `counters.json` (fix-import-metrics 3.1): плоский объект
+     * key:number, битые пары и неизвестные ключи пропускаются — старые
+     * выгрузки без новых метрик импортируются как раньше.
+     */
+    internal fun parseCounters(content: String): Map<String, Long> {
+        val out = HashMap<String, Long>()
+        val body = content.trim().removePrefix("{").removeSuffix("}")
+        for (part in splitTopLevel(body)) {
+            val idx = part.indexOf(':')
+            if (idx < 0) continue
+            val key = part.substring(0, idx).trim().removeSurrounding("\"")
+            if (key.isEmpty()) continue
+            val raw = part.substring(idx + 1).trim()
+            val value = raw.toLongOrNull() ?: raw.toDoubleOrNull()?.toLong() ?: continue
+            out[key] = value
+        }
+        return out
     }
 
     internal fun parseFormat(meta: String): Int? =
@@ -180,14 +206,43 @@ object TrackDebugImport {
                 val trackId = trackRepo.openDayChunk(date)
                 val (accepted, rej) = reprocessDay(byDay[day] ?: emptyList())
                 if (accepted.isNotEmpty()) {
-                    for (chunk in accepted.chunked(REBUILD_CHUNK)) {
+                    for (chunk in chunkAccepted(accepted)) {
                         fogRepo.appendPoints(trackId, chunk, date)
                     }
                     db.trackDao().fixDayBounds(trackId, accepted.first().time, accepted.last().time)
                 }
                 if (rej.isNotEmpty()) fogRepo.recordRejected(rej, date)
             }
+            // Эко-метрики дня (fix-import-metrics 3.2): из raw невосстановимы
+            // (семплирование 1/6, якорей нет) — переносим снимок counters.json;
+            // геометрия выше уже пересчитана, таблица counters была очищена.
+            fogRepo.restoreEcoCounters(parsed.counters)
         }
+    }
+
+    /**
+     * Чанки rebuild (fix-import-metrics 2.1): не больше [maxCount] точек и не
+     * больше [maxSpanMs] спана. Разрыв режет чанк: иначе `time_s` дня впитывает
+     * тишину (21.09 чанк через дыру 09:16→12:25 вносил сразу 3 часа).
+     */
+    internal fun chunkAccepted(
+        points: List<RawPoint>,
+        maxCount: Int = REBUILD_CHUNK,
+        maxSpanMs: Long = REBUILD_SPAN_MS
+    ): List<List<RawPoint>> {
+        val out = ArrayList<List<RawPoint>>()
+        var cur = ArrayList<RawPoint>()
+        for (p in points) {
+            if (cur.isNotEmpty() &&
+                (cur.size >= maxCount || p.time - cur.first().time > maxSpanMs)
+            ) {
+                out.add(cur)
+                cur = ArrayList()
+            }
+            cur.add(p)
+        }
+        if (cur.isNotEmpty()) out.add(cur)
+        return out
     }
 
     /**
@@ -195,4 +250,6 @@ object TrackDebugImport {
      * flush (FLUSH_SIZE=20), чтобы ворота C видели весь хвост.
      */
     const val REBUILD_CHUNK = 20
+    /** Максимальный спан чанка rebuild (fix-import-metrics 2.1), мс. */
+    const val REBUILD_SPAN_MS = 120_000L
 }

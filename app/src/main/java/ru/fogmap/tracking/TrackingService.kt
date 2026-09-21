@@ -31,6 +31,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.Locale
 import ru.fogmap.FogMapApp
 import ru.fogmap.MainActivity
@@ -56,6 +58,11 @@ class TrackingService : LifecycleService() {
     private val rejected = mutableMapOf<String, Long>()
     private var trackId: Long = -1
     private var flushJob: Job? = null
+    /**
+     * Сериализация flush (fix-import-metrics 1.2): периодический запуск и
+     * запуск по переполнению буфера не должны идти одновременно.
+     */
+    private val flushMutex = Mutex()
     /** Дата текущего суток-чанка (trust-v2 3.1): полночь режет чанк. */
     private var chunkDate: java.time.LocalDate = java.time.LocalDate.now()
     /** Момент последней доставки Fused (любой, даже отброшенной). */
@@ -368,6 +375,13 @@ class TrackingService : LifecycleService() {
     )
 
     private suspend fun flush() {
+        // Сериализация (fix-import-metrics 1.2): таймер и переполнение буфера
+        // не пересекаются, дистанция/время/клетки не двоятся.
+        flushMutex.withLock { flushLocked() }
+    }
+
+    /** Тело flush под [flushMutex]: чтение буферов, транзакция, метрики, лог. */
+    private suspend fun flushLocked() {
         val container = (application as FogMapApp).container
         // Граница суток — ДО ветки starved (day-track-history D5/D6): полночь
         // режет день строго в 00:00, новый день материализуется пустой строкой
@@ -593,6 +607,9 @@ class TrackingService : LifecycleService() {
      * ограничиваются одним flush-интервалом вместо 30 сек молча.
      */
     private fun flushBlocking() {
+        // Мьютекс занят — держатель ждёт главный поток (lifecycleScope),
+        // блокировать его самим нельзя: путь best-effort (fix-import-metrics 1.2).
+        if (flushMutex.isLocked) return
         runCatching {
             kotlinx.coroutines.runBlocking {
                 kotlinx.coroutines.withTimeoutOrNull(3000L) { flush() }
