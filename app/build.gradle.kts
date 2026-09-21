@@ -42,7 +42,22 @@ val baseVersion: String =
         ?.takeIf { it.isNotEmpty() } ?: "0.0.0-dev"
 val gitCount: Int = gitOut("rev-list", "--count", "HEAD")?.toIntOrNull() ?: 0
 val gitSha: String = gitOut("rev-parse", "--short", "HEAD") ?: "unknown"
-val gitDirty: Boolean = gitOut("status", "--porcelain")?.isNotEmpty() ?: true
+// NB: gitOut() маппит пустой вывод в null (для count/sha пусто = ошибка).
+// Для `status --porcelain` пусто = чисто, поэтому проверяем напрямую,
+// иначе любая сборка (даже чистая) получала бы -dirty-.
+val gitDirty: Boolean = try {
+    if (!System.getenv("FOGMAP_NO_GIT").isNullOrBlank()) true
+    else {
+        val proc = ProcessBuilder("git", "status", "--porcelain")
+            .directory(rootProject.projectDir)
+            .redirectErrorStream(true)
+            .start()
+        val out = proc.inputStream.bufferedReader().readText().trim()
+        if (proc.waitFor() == 0) out.isNotEmpty() else true
+    }
+} catch (_: Exception) {
+    true
+}
 val versionCodeInt: Int = maxOf(gitCount, 3)
 val dirtyTs: String =
     if (gitDirty) LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmm")) else ""
