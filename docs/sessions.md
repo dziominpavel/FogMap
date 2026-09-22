@@ -12,6 +12,18 @@
 
 ---
 
+## 2026-09-22 — fog-eco-reliability: propose + apply (код, без поля)
+
+Что сделали:
+- Propose: change `fog-eco-reliability` (proposal + 2 дельты + design + tasks).
+- Apply 6/9: STANDBY BALANCED 90с/150м -> HIGH 60с/30с/0м; вето сна после холостого BURST убрано (считается только метрика); BURST->ACTIVE по MOVING ИЛИ speed-latch >5 м/с при acc<=25м (вердикт точки не меняется, в eco_state пишет SPEED); дебаунс ACTIVE->STANDBY после скорости 3 мин; решения STANDBY/BURST/ACTIVE вынесены в чистые функции EcoGovernor.
+- Тесты: 149/149 зеленые (`EcoGovernorTest` 5 -> 9: GPS без motion будит, границы latch, пробка не роняет ACTIVE).
+- Осталось за владельцем (нужны устройство/поездка): 3.2 replay обеда 22.09, 4.1 заезд с телефоном на сиденье (префикс <=200м медианы, карта открывается), 4.2 замер `eco_gps_ms` дома + решение STANDBY 30/60с и холда 3/5мин.
+
+Версия: 1.3.0 → 1.4.0 (MINOR, надёжный эко-режим; принято на архивации change).
+
+---
+
 ## 2026-09-22 — fix-import-metrics: propose → apply → archive (без полевого закрытия)
 
 Сделали:

@@ -93,9 +93,10 @@ class TrackingService : LifecycleService() {
     /** Источник последнего пробуждения для eco_state (wake-balance 4.1). */
     @Volatile
     private var lastWakeSource: String = EcoGovernor.WakeSource.GPS
-    /** Момент последнего холостого BURST для анти-флаппинга (wake-balance 4.2). */
+    /** Момент последней достоверной скорости (fog-eco-reliability): держит ACTIVE
+     * против пробок. Холостые BURST в метрику идут, но сна-вето больше нет. */
     @Volatile
-    private var lastIdleBurstMs: Long = 0L
+    private var lastSpeedLatchMs: Long = 0L
     /** Ранние сигналы (wake-balance 1.1/1.2): motion-сенсор и WiFi-колбэк. */
     private var sensorManager: SensorManager? = null
     private var motionSensor: Sensor? = null
@@ -773,12 +774,20 @@ class TrackingService : LifecycleService() {
             } else null
         }
         val now = System.currentTimeMillis()
+        // Speed-latch (fog-eco-reliability): достоверная скорость держит ACTIVE
+        // против пробок во всех профилях; вердикт точки при этом не меняется.
+        if (loc.hasSpeed() && loc.hasAccuracy() &&
+            EcoGovernor.isSpeedLatch(loc.speed, loc.accuracy)
+        ) {
+            lastSpeedLatchMs = now
+        }
         return when (ecoProfile) {
             EcoGovernor.Profile.ACTIVE -> {
                 if (verdict.state == TrustEngine.State.STAND) {
                     standStreak += 1
-                    if (standStreak >= EcoGovernor.STAND_CONFIRM_STREAK &&
-                        now - lastStandbyEnterMs >= EcoGovernor.STANDBY_DEBOUNCE_MS
+                    if (EcoGovernor.activeMayStandby(
+                            standStreak, now, lastStandbyEnterMs, lastSpeedLatchMs
+                        )
                     ) {
                         standbyAnchorLat = loc.latitude
                         standbyAnchorLon = loc.longitude
@@ -801,29 +810,22 @@ class TrackingService : LifecycleService() {
                     val distM = FogRepository.haversineM(
                         anchorLat, anchorLon, loc.latitude, loc.longitude
                     ).toLong()
-                    // Сон после холостого BURST (wake-balance 4.2): GPS-джиттер
-                    // парковки не будит — только MOVING-вердикт. Motion/WiFi
-                    // идут мимо через requestBurstFromSensor без кулдауна.
-                    val inSleep = now - lastIdleBurstMs < EcoGovernor.POST_IDLE_SLEEP_MS &&
-                        lastIdleBurstMs > 0
-                    if (inSleep && verdict.state != TrustEngine.State.MOVING) {
-                        null
-                    } else if (EcoGovernor.isWakeSignal(anchorLat, anchorLon, loc.latitude, loc.longitude)) {
+                    // GPS будит всегда, motion не требуется (fog-eco-reliability):
+                    // якорь не двигаем каждый фикс, иначе окно уедет вместе
+                    // с медленным пешеходом и никогда не сработает (тот же
+                    // принцип что и STATIC_RADIUS в TrustEngine).
+                    val target = EcoGovernor.standbyTarget(verdict.state, distM)
+                    if (target != null) {
                         burstDeadlineMs = now + EcoGovernor.BURST_WINDOW_MS
-                        EcoTarget(EcoGovernor.Profile.BURST, distM, verdict.state.name)
-                    } else {
-                        // Якорь не двигаем каждый фикс: иначе окно уедет вместе
-                        // с медленным пешеходом и никогда не сработает (тот же
-                        // принцип что и STATIC_RADIUS в TrustEngine).
-                        if (verdict.state == TrustEngine.State.MOVING) {
-                            burstDeadlineMs = now + EcoGovernor.BURST_WINDOW_MS
-                            EcoTarget(EcoGovernor.Profile.BURST, distM, verdict.state.name)
-                        } else null
-                    }
+                        EcoTarget(target, distM, verdict.state.name)
+                    } else null
                 }
             }
             EcoGovernor.Profile.BURST -> {
-                if (verdict.state == TrustEngine.State.MOVING) {
+                val speedMps: Float? = if (loc.hasSpeed()) loc.speed else null
+                val accM: Float? = if (loc.hasAccuracy()) loc.accuracy else null
+                val target = EcoGovernor.burstTarget(verdict.state, speedMps, accM)
+                if (target != null) {
                     // Префикс фиксируется во flush по коридору якорь->first,
                     // здесь только переход (батарейка: без лишнего haversine).
                     val anchorLat = standbyAnchorLat
@@ -833,7 +835,12 @@ class TrackingService : LifecycleService() {
                             anchorLat, anchorLon, loc.latitude, loc.longitude
                         ).toLong()
                     } else EcoLogPayload.NO_ANCHOR_M
-                    EcoTarget(EcoGovernor.Profile.ACTIVE, distM, verdict.state.name, lastWakeSource)
+                    // Вердикт точки не меняется; в eco_state честно пишем,
+                    // чем вышли: MOVING или SPEED (скорость при грязной истории).
+                    val by = if (verdict.state == TrustEngine.State.MOVING) {
+                        verdict.state.name
+                    } else "SPEED"
+                    EcoTarget(target, distM, by, lastWakeSource)
                 } else if (now > burstDeadlineMs && burstDeadlineMs > 0) {
                     standbyAnchorLat = loc.latitude
                     standbyAnchorLon = loc.longitude
@@ -873,11 +880,11 @@ class TrackingService : LifecycleService() {
         }
         if (profile == EcoGovernor.Profile.STANDBY) {
             lastStandbyEnterMs = System.currentTimeMillis()
-            // Холостой BURST (wake-balance 4.1/4.2): джиттер без движения —
-            // якорь уже обновлен вызывателем, ставим сон и считаем в метрику.
+            // Холостой BURST (fog-eco-reliability): джиттер без движения —
+            // якорь уже обновлен вызывателем, считаем только в метрику.
+            // Сна-вето больше нет: следующий GPS-сдвиг разбудит как обычно.
             // Признак — source TIMEOUT (verdict тут имя состояния, не причина).
             if (from == EcoGovernor.Profile.BURST && source == EcoGovernor.WakeSource.TIMEOUT) {
-                lastIdleBurstMs = System.currentTimeMillis()
                 synchronized(buffer) { idleBurstPending += 1 }
             }
             // Персист якоря (wake-balance 2.1): переживает убийство/ребут.
