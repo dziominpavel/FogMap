@@ -3,6 +3,9 @@ package ru.fogmap.ui.screens
 import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.PointF
+import android.location.Location
+import android.location.LocationManager
+import android.os.Looper
 import android.os.SystemClock
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -39,6 +42,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.res.painterResource
@@ -61,11 +66,15 @@ import com.yandex.mapkit.user_location.UserLocationLayer
 import com.yandex.mapkit.user_location.UserLocationObjectListener
 import com.yandex.mapkit.user_location.UserLocationView
 import com.yandex.runtime.image.ImageProvider
+import com.google.android.gms.location.LocationCallback
+import com.google.android.gms.location.LocationRequest
+import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 import ru.fogmap.FogMapApp
 import ru.fogmap.R
 import ru.fogmap.data.PrefsKeys
@@ -185,11 +194,68 @@ fun MapScreen(nav: NavController) {
                 MapKitFactory.getInstance().createUserLocationLayer(mapView.mapWindow)
             }.getOrNull()
         }
-        // Живая позиция из слоя (показ vs архив: трек правды — в БД, слой — экран).
-        var liveLatLon by remember { mutableStateOf<Pair<Double, Double>?>(null) }
+        // Живая позиция (first-launch-visibility): единый экранный источник —
+        // позиция слоя MapKit приоритетна, fallback Fused заполняет только
+        // молчание слоя. Производная liveLatLon = слой ?: fallback — одна точка
+        // правды для показной дырки, follow, FAB и стартового прыжка.
+        var layerLatLon by remember { mutableStateOf<Pair<Double, Double>?>(null) }
+        var fusedLatLon by remember { mutableStateOf<Pair<Double, Double>?>(null) }
+        var layerLastMs by remember { mutableStateOf(0L) }
+        var fusedLastMs by remember { mutableStateOf(0L) }
         var liveView by remember { mutableStateOf<UserLocationView?>(null) }
-        var liveLastMs by remember { mutableStateOf(0L) }
         var nowTickMs by remember { mutableStateOf(SystemClock.elapsedRealtime()) }
+        // Производные: позиция — слой иначе fallback; свежесть — от любого
+        // источника (чип и stale-тикер не различают, откуда пришёл фикс).
+        val liveLatLon = layerLatLon ?: fusedLatLon
+        val liveLastMs = maxOf(layerLastMs, fusedLastMs)
+        // (спека map-render) Мастер геолокации вне экрана: обновляется по тику
+        // 30 с и при ON_START — смена состояния чипа без перезагрузки экрана.
+        fun locationEnabled(): Boolean = runCatching {
+            val lm = context.getSystemService(LocationManager::class.java)
+            lm != null && (
+                lm.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+                    lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+                )
+        }.getOrDefault(true)
+        var geoEnabled by remember { mutableStateOf(locationEnabled()) }
+        // Дедуп лога screen_pos: гейт работает на каждом фиксе, логируем
+        // переходы accepted↔rejected, не каждый фикс (dev-logging против шторма).
+        var fusedLogState by remember { mutableStateOf("") }
+        // Дедуп лога чтения позиции слоя: переходы ok↔fail, не каждый тик.
+        var layerPullLogState by remember { mutableStateOf("") }
+        // Единая обработка фикса Fused (спека map-render): гейт 100 м, приоритет
+        // слоя, лог screen_pos (source=fused, via — путь доставки).
+        fun onFusedFix(loc: Location, via: String) {
+            val acc = if (loc.hasAccuracy()) loc.accuracy else null
+            val plausible = GeoStatus.plausible(acc)
+            // Свежесть — от любого источника (design: «фикс свежее 120 с»):
+            // до приоритета слоя, иначе fusedLastMs замерзал при активном
+            // слое и чип ложно уходил в «Протухло» при живом GPS (поле).
+            if (plausible) fusedLastMs = SystemClock.elapsedRealtime()
+            if (layerLatLon != null) return // позицию ведёт слой — fallback молчит
+            if (plausible) {
+                fusedLatLon = loc.latitude to loc.longitude
+                if (fusedLogState != "accepted") {
+                    fusedLogState = "accepted"
+                    DevLog.i(
+                        "UI", "screen_pos",
+                        mapOf(
+                            "source" to "fused", "via" to via,
+                            "decision" to "accepted", "acc" to (acc ?: -1f)
+                        )
+                    )
+                }
+            } else if (fusedLogState != "rejected") {
+                fusedLogState = "rejected"
+                DevLog.i(
+                    "UI", "screen_pos",
+                    mapOf(
+                        "source" to "fused", "via" to via,
+                        "decision" to "rejected", "acc" to (acc ?: -1f)
+                    )
+                )
+            }
+        }
         // Follow (location-cursor 4.1): ведем по умолчанию, жест ставит на паузу.
         var followActive by remember { mutableStateOf(true) }
         var resumeJob by remember { mutableStateOf<Job?>(null) }
@@ -197,6 +263,42 @@ fun MapScreen(nav: NavController) {
         fun pullLivePosition(): Pair<Double, Double>? =
             runCatching { userLocationLayer?.cameraPosition()?.target }
                 .getOrNull()?.let { it.latitude to it.longitude }
+        // Синк снимка живой позиции слоя (полевой фикс): события объекта
+        // приходят не на каждый GPS-фикс — после старта layerLatLon замерзал,
+        // показная дырка и follow стояли, а FAB читал живое чтение и камера
+        // разъезжалась с крестом (спека: курсор и дырка двигаются в реальном
+        // времени вслед за фиксом). Чтение живое; запись — по эпсилону, чтобы
+        // дрожание ±1 м не будило рекомпозицию и follow каждый тик.
+        fun syncLayerPosition(force: Boolean = false): Pair<Double, Double>? {
+            val p = pullLivePosition()
+            if (p == null) {
+                if (layerPullLogState != "fail") {
+                    layerPullLogState = "fail"
+                    DevLog.w(
+                        "UI", "screen_pos",
+                        mapOf("source" to "layer", "decision" to "pull_failed")
+                    )
+                }
+                return null
+            }
+            if (layerPullLogState != "ok") {
+                // Первый удачный pull и восстановление после провала —
+                // читаемость: тик молча чинит снимок, без лога перехода
+                // непонятно, живёт fallback или позиция слоя.
+                layerPullLogState = "ok"
+                DevLog.i(
+                    "UI", "screen_pos",
+                    mapOf("source" to "layer", "decision" to "accepted")
+                )
+            }
+            if (liveView == null) return p // объекта нет — снимок не пишем
+            val cur = layerLatLon
+            if (force || cur == null || distMeters(cur, p) > LIVE_SYNC_EPS_M) {
+                layerLatLon = p
+                layerLastMs = SystemClock.elapsedRealtime()
+            }
+            return p
+        }
         // Растр, не вектор: вектор MapKit не отрисовывает и молча оставляет
         // свой дефолтный значок. Масштаб 1.5 от базы 12dp: красное ядро ~18dp
         // на экране. Провайдер и стиль кешируем — применяются на каждое
@@ -246,19 +348,26 @@ fun MapScreen(nav: NavController) {
                 override fun onObjectAdded(view: UserLocationView) {
                     styleLocationView(view)
                     liveView = view
-                    pullLivePosition()?.let {
-                        liveLatLon = it
-                        liveLastMs = SystemClock.elapsedRealtime()
-                    }
                     // ВРЕМЕННОЕ (dev-logging): редкое событие, не кадр.
                     DevLog.d("UI", "user_location", mapOf("event" to "added"))
+                    // (first-launch-visibility): слой отдал объект — он
+                    // приоритетный экранный источник, fallback-точка гаснет.
+                    // screen_pos (accepted/pull_failed) логирует сам синк по
+                    // переходу состояния чтения: событие и тик не дублируют.
+                    syncLayerPosition(force = true)
                 }
 
                 override fun onObjectRemoved(view: UserLocationView) {
                     if (liveView === view) liveView = null
-                    liveLatLon = null
+                    // Слой сдал объект: своя позиция очищается, fallback-
+                    // источник живёт последним принятым фиксом (спека
+                    // map-render: на экране всегда одна точка).
+                    layerLatLon = null
+                    layerLastMs = 0L
+                    layerPullLogState = "" // следующий add снова логирует accepted
                     // ВРЕМЕННОЕ (dev-logging): редкое событие, не кадр.
                     DevLog.d("UI", "user_location", mapOf("event" to "removed"))
+                    DevLog.i("UI", "screen_pos", mapOf("source" to "layer", "decision" to "removed"))
                 }
 
                 override fun onObjectUpdated(view: UserLocationView, event: ObjectEvent) {
@@ -271,10 +380,7 @@ fun MapScreen(nav: NavController) {
                     if (iconType != null) {
                         DevLog.d("UI", "user_location", mapOf("event" to "icon_changed", "icon" to iconType))
                     }
-                    pullLivePosition()?.let {
-                        liveLatLon = it
-                        liveLastMs = SystemClock.elapsedRealtime()
-                    }
+                    syncLayerPosition(force = true)
                 }
             }
         }
@@ -311,51 +417,59 @@ fun MapScreen(nav: NavController) {
         // ВРЕМЕННОЕ (dev-logging): число клеток для PERF-агрегата.
         LaunchedEffect(cells.size) { DevPerfMonitor.setCells(cells.size) }
         // Камера на текущую геолокацию через Fused: стартовый прыжок (чтобы не
-        // открываться в Москве) и fallback FAB пока слой не отдал позицию.
+        // открываться в Москве) и fallback FAB пока позиции нет. Оба пути — через
+        // гейт правдоподобия (спека map-render): фикс хуже 100 м камеру не
+        // двигает, фантомный сетевой фикс не увозит взгляд в «Москва-центр».
         // Всё через runCatching: microG может вернуть null.
         // Вызывать только с UI-потока (MapKit роняет процесс из фона).
         // Tilt всегда 0 (fog-mask-canvas 4.1): вид строго сверху.
         fun moveToMyLocation(zoom: Float) {
+            fun jump(loc: Location?, via: String) {
+                if (loc == null) {
+                    DevLog.i(
+                        "UI", "screen_pos",
+                        mapOf("source" to "fused", "via" to via, "decision" to "no_fix")
+                    )
+                    return
+                }
+                val acc = if (loc.hasAccuracy()) loc.accuracy else null
+                val plausible = GeoStatus.plausible(acc)
+                onFusedFix(loc, via) // состояние fallback + лог accepted/rejected
+                if (!plausible) return // гейт не прошёл — камера стоит на месте
+                runCatching {
+                    mapView.mapWindow.map.move(
+                        CameraPosition(Point(loc.latitude, loc.longitude), zoom, 0f, 0f),
+                        Animation(Animation.Type.SMOOTH, 0.8f), null
+                    )
+                    // ВРЕМЕННОЕ (dev-logging): исходящее программное движение.
+                    runCatching { DevCameraStats.onMove() }
+                }
+            }
             runCatching {
                 val client = LocationServices.getFusedLocationProviderClient(context)
                 client.lastLocation.addOnSuccessListener { loc ->
-                    if (loc != null) {
-                        runCatching {
-                            mapView.mapWindow.map.move(
-                                CameraPosition(Point(loc.latitude, loc.longitude), zoom, 0f, 0f),
-                                Animation(Animation.Type.SMOOTH, 0.8f), null
-                            )
-                            // ВРЕМЕННОЕ (dev-logging): исходящее программное движение.
-                            runCatching { DevCameraStats.onMove() }
-                        }
+                    val acc = loc?.let { if (it.hasAccuracy()) it.accuracy else null }
+                    if (loc != null && GeoStatus.plausible(acc)) {
+                        jump(loc, "start")
                     } else {
+                        // lastLocation худой/отсутствует — пробуем свежий фикс
+                        // (он может оказаться правдоподобным даже при плохом кэше).
+                        if (loc != null) onFusedFix(loc, "start") // лог rejected
                         runCatching {
                             client.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
-                                .addOnSuccessListener { fresh ->
-                                    if (fresh != null) {
-                                        runCatching {
-                                            mapView.mapWindow.map.move(
-                                                CameraPosition(
-                                                    Point(fresh.latitude, fresh.longitude),
-                                                    zoom, 0f, 0f
-                                                ),
-                                                Animation(Animation.Type.SMOOTH, 0.8f), null
-                                            )
-                                            // ВРЕМЕННОЕ (dev-logging): исходящее программное движение.
-                                            runCatching { DevCameraStats.onMove() }
-                                        }
-                                    }
-                                }
+                                .addOnSuccessListener { fresh -> jump(fresh, "start") }
                         }
                     }
                 }
             }
         }
-        // Камера к живой точке слоя (follow/FAB): зум caller задает сам.
-        // Вызывать только с UI-потока, tilt всегда 0. Fallback на Fused здесь
-        // нет — его держит moveToMyLocation для старта и пустого слоя.
+        // Камера к живой точке (follow/FAB): зум caller задает сам.
+        // Вызывать только с UI-потока, tilt всегда 0. Цель — производная
+        // liveLatLon (слой иначе fallback Fused): оба источника через гейт.
         fun moveToLive(zoom: Float) {
-            val target = pullLivePosition() ?: liveLatLon ?: return
+            // Живое чтение через синк: FAB и возврат follow пересинкивают тот
+            // же снимок, что рисует дырку — камера и крест не разъезжаются.
+            val target = syncLayerPosition() ?: liveLatLon ?: return
             runCatching {
                 mapView.mapWindow.map.move(
                     CameraPosition(Point(target.first, target.second), zoom, 0f, 0f),
@@ -443,6 +557,58 @@ fun MapScreen(nav: NavController) {
                 resumeJob?.cancel()
             }
         }
+        // (first-launch-visibility, задача 1.2) Fallback Fused-подписка: слой
+        // в помещении может молчать десятки секунд — экран живёт от собственной
+        // подписки, пока карта видима (ON_START/ON_STOP). Первое значение —
+        // lastLocation через гейт, дальше — обновления HIGH ~8 c. Приоритет
+        // слоя и гейт 100 м — внутри onFusedFix. В БД подписка не пишет
+        // ничего: читает только экран (спека map-render).
+        val fallbackCallback = remember(context) {
+            object : LocationCallback() {
+                override fun onLocationResult(result: LocationResult) {
+                    for (loc in result.locations) onFusedFix(loc, "sub")
+                }
+            }
+        }
+        DisposableEffect(lifecycle, mapView, fallbackCallback) {
+            val client = LocationServices.getFusedLocationProviderClient(context)
+            val observer = LifecycleEventObserver { _, event ->
+                when (event) {
+                    Lifecycle.Event.ON_START -> {
+                        geoEnabled = locationEnabled()
+                        runCatching {
+                            client.lastLocation.addOnSuccessListener { loc ->
+                                if (loc != null) onFusedFix(loc, "last")
+                            }
+                            val request = LocationRequest.Builder(
+                                Priority.PRIORITY_HIGH_ACCURACY, 8_000L
+                            )
+                                .setMinUpdateIntervalMillis(5_000L)
+                                .setWaitForAccurateLocation(false)
+                                .build()
+                            client.requestLocationUpdates(
+                                request, fallbackCallback, Looper.getMainLooper()
+                            )
+                            // ВРЕМЕННОЕ (dev-logging): редкие события жизненного цикла.
+                            DevLog.d("UI", "screen_pos", mapOf("source" to "fused", "event" to "subscribe"))
+                        }.onFailure {
+                            DevLog.w("UI", "screen_pos", mapOf("source" to "fused", "event" to "subscribe_failed"))
+                        }
+                    }
+                    Lifecycle.Event.ON_STOP -> {
+                        runCatching { client.removeLocationUpdates(fallbackCallback) }
+                        DevLog.d("UI", "screen_pos", mapOf("source" to "fused", "event" to "unsubscribe"))
+                    }
+                    else -> Unit
+                }
+            }
+            // addObserver синхронно достаёт текущее состояние lifecycle.
+            lifecycle.addObserver(observer)
+            onDispose {
+                lifecycle.removeObserver(observer)
+                runCatching { client.removeLocationUpdates(fallbackCallback) }
+            }
+        }
         // Ведение за живой точкой (location-cursor 4.1): первый fix прыгает на
         // 15f как раньше (стартовый moveToMyLocation уже отработал рядом),
         // дальше едем на зуме пользователя. В ручном осмотре стоим.
@@ -458,10 +624,26 @@ fun MapScreen(nav: NavController) {
         }
         // Stale-тикер (location-cursor 2.2): тишина дольше порога TrustEngine —
         // точку приглушаем, пятно и ведение остаются. Тик редкий, не кадр.
+        // (first-launch-visibility): тем же тиком обновляем мастер гео для чипа —
+        // если настройка поменялась, пока экран открыт, MAX 30 с до перехода.
         LaunchedEffect(Unit) {
             while (true) {
                 delay(30_000)
                 nowTickMs = SystemClock.elapsedRealtime()
+                geoEnabled = locationEnabled()
+            }
+        }
+        // (first-launch-visibility, полевой фикс) Живой синк снимка слоя:
+        // события объекта не приходят на каждый фикс — дырка/чип/follow
+        // замерзали на старом снимке, FAB читал живую позицию и камера
+        // разъезжалась с крестом (в поле курсор выезжал из дырки под вуаль).
+        // Тик 1 с, запись по эпсилону; экран остановлен — молчим.
+        LaunchedEffect(liveView) {
+            if (liveView == null) return@LaunchedEffect
+            while (true) {
+                delay(1_000)
+                if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) continue
+                syncLayerPosition()
             }
         }
         val isLiveStale = liveLatLon != null && liveLastMs > 0L &&
@@ -592,31 +774,99 @@ fun MapScreen(nav: NavController) {
             }
             out
         }
+        // (first-launch-visibility 2.1) Экранная точка fallback-курсора: та же
+        // проекция worldToScreen, что у дырок — точка едет с картой при пане.
+        // Ключи — как у holesPx (живая позиция, зум, target) + сам слой: объект
+        // слоя есть → проекция не строится (точка слоя и есть курсор, двойной
+        // точки не бывает — 2.2); слой молчит + фикса нет → точки тоже нет.
+        val fallbackPx: Pair<Float, Float>? = remember(
+            liveLatLon, camZoom, camTarget, layerLatLon
+        ) {
+            val fix = liveLatLon
+            if (layerLatLon != null || fix == null) null
+            else runCatching { mapView.mapWindow.worldToScreen(Point(fix.first, fix.second)) }
+                .getOrNull()?.let { it.x to it.y }
+        }
         Box(Modifier.fillMaxSize().padding(pad)) {
             AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
+            // (first-launch-visibility 2.1–2.3) Fallback-курсор под вуалью: пока
+            // слой молчит, та же красная точка (тот же растр, масштаб 1.5) в
+            // показной дырке. При объекте слоя гаснет — на экране одна точка;
+            // протухание > 2 мин — тем же liveLastMs/тиком, что у нативной.
+            if (fallbackPx != null) {
+                val (fx, fy) = fallbackPx
+                Image(
+                    painter = painterResource(R.drawable.ic_my_location),
+                    contentDescription = null,
+                    modifier = Modifier
+                        .layout { measurable, constraints ->
+                            // Якорь в центре иконки — как anchor(0.5; 0.5) слоя.
+                            val placeable = measurable.measure(constraints)
+                            layout(placeable.width, placeable.height) {
+                                placeable.placeRelative(
+                                    fx.roundToInt() - placeable.width / 2,
+                                    fy.roundToInt() - placeable.height / 2
+                                )
+                            }
+                        }
+                        .graphicsLayer(
+                            // Масштаб 1.5 от базы 12dp — как IconStyle слоя.
+                            scaleX = 1.5f,
+                            scaleY = 1.5f,
+                            alpha = if (isLiveStale) 0.5f else 1f
+                        )
+                )
+            }
             // Маска поверх карты (личная сборка: MAY перекрывать логотип).
             FogMaskOverlay(
                 holes = holesPx,
                 veilColor = veilColor,
                 modifier = Modifier.fillMaxSize()
             )
-            // Статус-чип сессии: read-only, слева внизу над логотипом SDK.
-            Surface(
-                shape = MaterialTheme.shapes.small,
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
-                modifier = Modifier.align(Alignment.BottomStart)
-                    .padding(start = 16.dp, bottom = 64.dp)
+            // Статус-чипы слева внизу над логотипом SDK: сверху — состояние
+            // геолокации (спека map-render), снизу — запись сессии. Компоновка
+            // отдельной строкой, чтобы чипы не наложились (design.md D5).
+            Column(
+                Modifier.align(Alignment.BottomStart)
+                    .padding(start = 16.dp, bottom = 64.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Row(
-                    Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                // (спека map-render) Чип состояния геолокации: объясняет, почему
+                // живой точки на экране ещё нет. Четыре состояния считает
+                // чистая GeoStatus.state; заглушек не видит — при них сюда не
+                // попадаем (return@Scaffold выше чипа нет).
+                Surface(
+                    shape = MaterialTheme.shapes.small,
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)
                 ) {
                     Text(
-                        if (isPaused) "⏸ Пауза" else "● Запись идёт",
+                        GeoStatus.label(
+                            GeoStatus.state(
+                                geoEnabled = geoEnabled,
+                                lastFixMs = liveLastMs.takeIf { it > 0L },
+                                nowMs = nowTickMs
+                            )
+                        ),
                         style = MaterialTheme.typography.labelLarge,
-                        color = if (isPaused) MaterialTheme.colorScheme.onSurface
-                        else MaterialTheme.colorScheme.primary
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
                     )
+                }
+                Surface(
+                    shape = MaterialTheme.shapes.small,
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)
+                ) {
+                    Row(
+                        Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            if (isPaused) "⏸ Пауза" else "● Запись идёт",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = if (isPaused) MaterialTheme.colorScheme.onSurface
+                            else MaterialTheme.colorScheme.primary
+                        )
+                    }
                 }
             }
             // Правая колонка: зум + «Где я» (remove-map-rotation: компаса нет,
@@ -640,7 +890,9 @@ fun MapScreen(nav: NavController) {
                     // ВРЕМЕННОЕ (dev-logging): нажатие «Где я».
                     DevLog.d("UI", "tap", mapOf("target" to "my_location"))
                     // Follow (location-cursor 4.1): возврат сразу без таймера.
-                    // Точка слоя первична, Fused — fallback пока слоя нет.
+                    // Цель — производная liveLatLon (слой иначе fallback, оба
+                    // через гейт 100 м); без позиции moveToMyLocation тоже
+                    // через гейт — камера без правдоподобного фикса не едет.
                     resumeJob?.cancel()
                     followActive = true
                     if (liveLatLon != null) moveToLive(camZoom)
@@ -651,6 +903,18 @@ fun MapScreen(nav: NavController) {
             }
         }
     }
+}
+
+// Эпсилон живого синка позиции слоя, м: меньше — дрожание GPS будило
+// рекомпозицию и follow каждый тик, больше — дырка отставала от курсора.
+private const val LIVE_SYNC_EPS_M = 2.0
+
+// Приблизительное расстояние между координатами, м (плоскость у точки).
+private fun distMeters(a: Pair<Double, Double>, b: Pair<Double, Double>): Double {
+    val midLat = Math.toRadians((a.first + b.first) / 2.0)
+    val dLat = (a.first - b.first) * 111_320.0
+    val dLon = (a.second - b.second) * 111_320.0 * Math.cos(midLat)
+    return Math.hypot(dLat, dLon)
 }
 
 /**
