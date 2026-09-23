@@ -5,6 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import ru.fogmap.tracking.LocationFilter
+import ru.fogmap.tracking.MotionKind
 
 class LocationFilterTest {
     @Test
@@ -39,6 +40,41 @@ class LocationFilterTest {
     }
 
     @Test
+    fun `per-type accuracy 25 40 100`() {
+        // BIKE: 35 проходит, 45 — нет.
+        assertTrue(
+            LocationFilter.accept(
+                LocationFilter.Input(35f, 5f, false), MotionKind.BIKE
+            )
+        )
+        assertFalse(
+            LocationFilter.accept(
+                LocationFilter.Input(45f, 5f, false), MotionKind.BIKE
+            )
+        )
+        // VEHICLE: 80 проходит, WALK 60 — нет.
+        assertTrue(
+            LocationFilter.accept(
+                LocationFilter.Input(80f, 20f, false), MotionKind.VEHICLE
+            )
+        )
+        assertFalse(
+            LocationFilter.accept(
+                LocationFilter.Input(60f, 1.5f, false), MotionKind.WALK
+            )
+        )
+        // STILL/WALK — прежний порог 25.
+        assertFalse(
+            LocationFilter.accept(
+                LocationFilter.Input(30f, 0.2f, false), MotionKind.STILL
+            )
+        )
+        assertEquals(25f, LocationFilter.maxAccuracyFor(MotionKind.STILL))
+        assertEquals(40f, LocationFilter.maxAccuracyFor(MotionKind.BIKE))
+        assertEquals(100f, LocationFilter.maxAccuracyFor(MotionKind.VEHICLE))
+    }
+
+    @Test
     fun `причины отбросов различаются`() {
         assertEquals(
             LocationFilter.Reason.BAD_ACCURACY,
@@ -55,6 +91,13 @@ class LocationFilterTest {
         assertEquals(
             LocationFilter.Reason.OK,
             LocationFilter.reason(LocationFilter.Input(10f, 1f, false))
+        )
+        // Скорость >150 км/ч жёстко отбрасывается даже при чистом kind-пороге.
+        assertEquals(
+            LocationFilter.Reason.BAD_SPEED,
+            LocationFilter.reason(
+                LocationFilter.Input(10f, 50f, false), MotionKind.VEHICLE
+            )
         )
     }
 }

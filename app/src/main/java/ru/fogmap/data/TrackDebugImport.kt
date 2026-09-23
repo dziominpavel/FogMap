@@ -133,8 +133,9 @@ object TrackDebugImport {
     }
 
     /**
-     * Чистая перепрожка дня текущим кодом (тестируется без БД): фильтр заново,
-     * затем TrustEngine с нуля. STAND дропается из точек как в сервисе.
+     * Чистая перепрожка дня текущим кодом (тестируется без БД): фильтр заново
+     * (kind-пороги), затем TrustEngine с нуля. STAND-статика дропается из
+     * точек (импорт не знает эко-профиля; дистанция по MOVING и так честна).
      */
     fun reprocessDay(rows: List<RawFixEntity>): Pair<List<RawPoint>, Map<String, Long>> {
         val rej = HashMap<String, Long>()
@@ -143,16 +144,39 @@ object TrackDebugImport {
         val hist = ArrayDeque<TrustEngine.HistPoint>()
         for (r in rows.sortedBy { it.time }) {
             val accOrNull = if (r.acc < 0) null else r.acc
+            val kind = ru.fogmap.tracking.MotionKindClassifier.classify(r.speed, prev?.kind)
             val reason = LocationFilter.reason(
-                LocationFilter.Input(accuracy = accOrNull, speed = r.speed, isMock = r.isMock)
+                LocationFilter.Input(accuracy = accOrNull, speed = r.speed, isMock = r.isMock),
+                kind
             )
-            if (reason != LocationFilter.Reason.OK) {
+            val softAccuracy = reason == LocationFilter.Reason.BAD_ACCURACY &&
+                r.acc > 0f && accOrNull != null &&
+                accOrNull > LocationFilter.maxAccuracyFor(kind)
+            val hard = reason == LocationFilter.Reason.MOCK ||
+                reason == LocationFilter.Reason.NO_ACCURACY ||
+                reason == LocationFilter.Reason.BAD_SPEED ||
+                (reason == LocationFilter.Reason.BAD_ACCURACY && !softAccuracy)
+            if (hard) {
                 rej[reason.key] = (rej[reason.key] ?: 0) + 1
                 continue
             }
-            val hp = TrustEngine.HistPoint(time = r.time, lat = r.lat, lon = r.lon, acc = r.acc)
+            val hp = TrustEngine.HistPoint(
+                time = r.time, lat = r.lat, lon = r.lon, acc = r.acc, speed = r.speed
+            )
             val v = TrustEngine.evaluate(prev, hist.toList(), hp)
             prev = v.next
+            if (softAccuracy) {
+                // Мягкий путь (3.2): история обновляется, точка не пишется.
+                rej[reason.key] = (rej[reason.key] ?: 0) + 1
+                if (v.resetHistory) {
+                    val keep = hist.lastOrNull()
+                    hist.clear()
+                    if (keep != null) hist.addLast(keep)
+                }
+                hist.addLast(hp)
+                TrustEngine.pruneHistory(hist, hp.time)
+                continue
+            }
             v.countReject?.let { rej[it] = (rej[it] ?: 0) + 1 }
             // Зеркало сервиса: сброс окна с якорем непрерывности.
             if (v.resetHistory) {

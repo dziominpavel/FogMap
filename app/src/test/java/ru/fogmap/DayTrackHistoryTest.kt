@@ -43,8 +43,14 @@ class DayTrackHistoryTest {
     @Test
     fun `батч движения дает честную дистанцию без поправки на статику`() {
         // Две движущиеся точки в 0.001° (~111 м): статики рядом нет, джиттера нет.
-        val a = RawPoint(time = 0, lat = 55.0, lon = 37.0, acc = 10f, speed = 1f)
-        val b = RawPoint(time = 8000, lat = 55.001, lon = 37.0, acc = 10f, speed = 1f)
+        val a = RawPoint(
+            time = 0, lat = 55.0, lon = 37.0, acc = 10f, speed = 1f,
+            trust = 100, state = "MOVING"
+        )
+        val b = RawPoint(
+            time = 8000, lat = 55.001, lon = 37.0, acc = 10f, speed = 1f,
+            trust = 100, state = "MOVING"
+        )
         val d = FogRepository.batchDistance(listOf(a, b))
         assertTrue("ожидалось ~111 м, получено $d", d > 110 && d < 113)
     }

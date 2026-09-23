@@ -112,4 +112,67 @@ class TrackDebugExportTest {
         assertTrue(parsed.days.containsKey("2026-09-19"))
         assertTrue(parsed.days["2026-09-19"]!!.isEmpty())
     }
+
+    @Test
+    fun `rawJson несет kind из speed без миграции`() {
+        val json = TrackDebugExport.rawJson(raw("2026-09-23", 1L).copy(speed = 3f))
+        assertTrue("нет kind: $json", json.contains("\"kind\":\"BIKE\""))
+        val noSpeed = TrackDebugExport.rawJson(
+            raw("2026-09-23", 2L).copy(speed = null)
+        )
+        assertTrue(noSpeed.contains("\"kind\":null"))
+        val walk = TrackDebugExport.rawJson(
+            raw("2026-09-23", 3L).copy(speed = 1.4f)
+        )
+        assertTrue(walk.contains("\"kind\":\"WALK\""))
+    }
+
+    @Test
+    fun `meta thresholds несут новые пороги`() {
+        val zip = TrackDebugExport.buildZip(
+            TrackDebugExport.Input(
+                "2026-09-23", "2026-09-23", emptyMap(), emptyList(), emptyMap(), "test"
+            )
+        )
+        val entries = mutableMapOf<String, String>()
+        ZipInputStream(ByteArrayInputStream(zip)).use { zin ->
+            while (true) {
+                val e = zin.getNextEntry() ?: break
+                entries[e.name] = zin.readBytes().toString(Charsets.UTF_8)
+                zin.closeEntry()
+            }
+        }
+        val meta = entries["meta.json"]!!
+        assertTrue(meta.contains("\"speedMin\":1.0"))
+        assertTrue(meta.contains("\"bikeAcc\":40.0"))
+        assertTrue(meta.contains("\"vehicleAcc\":100.0"))
+        assertTrue(meta.contains("\"burstWindowMs\":180000"))
+    }
+
+    @Test
+    fun `withBranchZeros добавляет все ветки с видимым 0`() {
+        val out = TrackDebugExport.withBranchZeros(
+            mapOf("rejected_accuracy_all" to 3L),
+            listOf("2026-09-23")
+        )
+        for (b in ru.fogmap.tracking.TrustEngine.BRANCH_KEYS) {
+            assertEquals(0L, out["branch_${b}_all"])
+            assertEquals(0L, out["branch_${b}_day_2026-09-23"])
+        }
+        assertEquals(3L, out["rejected_accuracy_all"])
+        // Уже материализованные нули не перетираются.
+        val seeded = TrackDebugExport.withBranchZeros(
+            mapOf("branch_teleport_all" to 5L),
+            listOf("2026-09-23")
+        )
+        assertEquals(5L, seeded["branch_teleport_all"])
+    }
+
+    @Test
+    fun `counters json из экспорта содержит branch-ключи`() {
+        val counters = TrackDebugExport.withBranchZeros(emptyMap(), listOf("2026-09-23"))
+        val json = TrackDebugExport.countersJson(counters)
+        assertTrue(json.contains("\"branch_teleport_all\":0"))
+        assertTrue(json.contains("\"branch_kind_WALK_day_2026-09-23\":0"))
+    }
 }

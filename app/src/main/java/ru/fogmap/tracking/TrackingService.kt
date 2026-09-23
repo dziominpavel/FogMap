@@ -56,6 +56,8 @@ class TrackingService : LifecycleService() {
     private val rawBuffer = mutableListOf<RawFixEntity>()
     /** Отбросы текущей пачки: причина -> count (tracking-reliability 3.1). */
     private val rejected = mutableMapOf<String, Long>()
+    /** Счётчики веток TrustEngine текущей пачки (fix-walk-fog-verdict 6.1). */
+    private val branchCounts = mutableMapOf<String, Long>()
     private var trackId: Long = -1
     private var flushJob: Job? = null
     /**
@@ -162,6 +164,8 @@ class TrackingService : LifecycleService() {
             // строкой с нулями даже до первой движущейся точки.
             trackId = container.trackRepository.openDayChunk()
             chunkDate = java.time.LocalDate.now()
+            // Нули веток дня видимы с первого момента (6.2), не после flush.
+            runCatching { container.fogRepository.recordBranches(emptyMap(), chunkDate) }
             // Эко-профиль с прошлого запуска (battery-eco 2.4).
             runCatching {
                 val saved = container.dataStore.data.first()[PrefsKeys.ECO_PROFILE]
@@ -215,8 +219,15 @@ class TrackingService : LifecycleService() {
             speed = speedOrNull,
             isMock = isMock
         )
-        val reason = LocationFilter.reason(input)
-        if (reason != LocationFilter.Reason.OK) {
+        val kind = MotionKindClassifier.classify(speedOrNull, trustPrev?.kind)
+        val reason = LocationFilter.reason(input, kind)
+        // Жёсткие отбросы (mock/no-acc/speed>150): без истории trust,
+        // без track_points (3.3). BAD_ACCURACY kind-порога — мягкий путь ниже.
+        val hardReject = reason == LocationFilter.Reason.MOCK ||
+            reason == LocationFilter.Reason.NO_ACCURACY ||
+            reason == LocationFilter.Reason.BAD_SPEED ||
+            (reason == LocationFilter.Reason.BAD_ACCURACY && !(loc.hasAccuracy() && loc.accuracy > 0f))
+        if (hardReject) {
             var wakeTarget: EcoTarget? = null
             synchronized(buffer) {
                 rejected[reason.key] = (rejected[reason.key] ?: 0) + 1
@@ -230,12 +241,8 @@ class TrackingService : LifecycleService() {
                         history = trustHistory.toList()
                     )
                 )
-                // Плохое indoor-начало будит, но не открывает (wake-balance 2.3):
-                // точка acc 48 из подъезда не должна теряться молча — уходим
-                // в BURST для проверки чистым HIGH, туман закрыт до MOVING.
                 if (ecoProfile == EcoGovernor.Profile.STANDBY &&
-                    (reason == LocationFilter.Reason.BAD_ACCURACY ||
-                        reason == LocationFilter.Reason.NO_ACCURACY)
+                    reason == LocationFilter.Reason.NO_ACCURACY
                 ) {
                     val anchorLat = standbyAnchorLat
                     val anchorLon = standbyAnchorLon
@@ -263,7 +270,8 @@ class TrackingService : LifecycleService() {
         // синхронно в колбэке; история в памяти — все принятые точки (включая
         // дропнутую STAND-статику, иначе холодный старт не выйдет из STAND).
         val hp = TrustEngine.HistPoint(
-            time = loc.time, lat = loc.latitude, lon = loc.longitude, acc = loc.accuracy
+            time = loc.time, lat = loc.latitude, lon = loc.longitude, acc = loc.accuracy,
+            speed = speedOrNull
         )
         synchronized(buffer) {
             if (pausedCached) {
@@ -280,6 +288,51 @@ class TrackingService : LifecycleService() {
                 )
                 return
             }
+            // Мягкий путь (3.2): acc хуже порога kind → raw + история trust
+            // с низким весом (ACC_TRUST_CAP), НЕ в track_points / не открывает.
+            if (reason == LocationFilter.Reason.BAD_ACCURACY) {
+                val historySnap = trustHistory.toList()
+                val prevSnap = trustPrev
+                val verdict = TrustEngine.evaluate(trustPrev, historySnap, hp)
+                trustPrev = verdict.next
+                rejected[reason.key] = (rejected[reason.key] ?: 0) + 1
+                ecoFixCount += 1
+                countBranches(verdict)
+                if (verdict.resetHistory) {
+                    val keep = trustHistory.lastOrNull()
+                    trustHistory.clear()
+                    if (keep != null) trustHistory.addLast(keep)
+                }
+                trustHistory.addLast(hp)
+                TrustEngine.pruneHistory(trustHistory, hp.time)
+                rawBuffer.add(
+                    rawOf(
+                        loc = loc, accOrDef = accOrDef, speedOrNull = speedOrNull,
+                        isMock = isMock, filter = reason.key,
+                        state = verdict.state.name, trust = verdict.trust,
+                        openFog = 0, rejectReason = verdict.countReject,
+                        history = historySnap, prev = prevSnap
+                    )
+                )
+                if (ecoProfile == EcoGovernor.Profile.STANDBY) {
+                    val anchorLat = standbyAnchorLat
+                    val anchorLon = standbyAnchorLon
+                    if (anchorLat != null && anchorLon != null) {
+                        val distM = FogRepository.haversineM(
+                            anchorLat, anchorLon, loc.latitude, loc.longitude
+                        ).toLong()
+                        if (distM >= EcoGovernor.WAKE_DISTANCE_M.toLong()) {
+                            burstDeadlineMs = System.currentTimeMillis() + EcoGovernor.BURST_WINDOW_MS
+                            val t = EcoTarget(
+                                EcoGovernor.Profile.BURST, distM, "WAKE_ACC",
+                                EcoGovernor.WakeSource.GPS
+                            )
+                            lifecycleScope.launch { enterProfile(t.profile, wakeM = t.wakeM, verdict = t.verdict, source = t.source) }
+                        }
+                    }
+                }
+                return
+            }
             val historySnap = trustHistory.toList()
             val prevSnap = trustPrev
             val verdict = TrustEngine.evaluate(trustPrev, historySnap, hp)
@@ -289,6 +342,7 @@ class TrackingService : LifecycleService() {
             }
             ecoFixCount += 1
             if (verdict.state == TrustEngine.State.STAND) ecoStandCount += 1
+            countBranches(verdict)
             // Сброс окна после существенного трогания (track-fix 19.09):
             // стояночные нули выкидываются, но последний кадр остается
             // якорем непрерывности (иначе медиане не из чего считаться).
@@ -321,16 +375,25 @@ class TrackingService : LifecycleService() {
             // Эко-губернатор (battery-eco 2.2/2.3): решение о профиле — после
             // вердикта, сам переход — вне synchronized (там переподписка).
             val target = ecoTargetAfterVerdict(verdict, loc)
-            // День-атом (day-track-history D2): статика (STAND — стою, открывать
-            // нечего) в БД не пишется вообще: ни точки, ни rejected. Движок
-            // доверия при этом шагает как раньше (история в памяти нужна,
-            // иначе холодный старт никогда не выйдет из STAND); прыжки
-            // (SUSPECT/jump) и движение пишутся как раньше.
+            // День-атом (day-track-history D2 + fix-walk-fog-verdict 4.1):
+            // STAND в STANDBY не пишется (6 часов дома = 0 точек); в ACTIVE
+            // и BURST строка есть с openFog=false (дистанция не растёт).
             if (verdict.state == TrustEngine.State.STAND) {
+                if (ecoProfile != EcoGovernor.Profile.STANDBY) {
+                    buffer.add(
+                        RawPoint(
+                            time = loc.time, lat = loc.latitude, lon = loc.longitude,
+                            acc = loc.accuracy, speed = speedOrNull,
+                            trust = verdict.trust, openFog = false,
+                            state = verdict.state.name, rejectReason = verdict.countReject
+                        )
+                    )
+                }
                 if (target != null && target.profile != ecoProfile) {
                     val t = target
                     lifecycleScope.launch { enterProfile(t.profile, wakeM = t.wakeM, verdict = t.verdict, source = t.source) }
                 }
+                if (buffer.size >= FLUSH_SIZE) lifecycleScope.launch { flush() }
                 return
             }
             // Раздельные ворота (spec tracking): точка пишется всегда
@@ -349,6 +412,13 @@ class TrackingService : LifecycleService() {
             }
             if (buffer.size >= FLUSH_SIZE) lifecycleScope.launch { flush() }
         }
+    }
+
+    /** Инкременты веток вердикта + kind (fix-walk-fog-verdict 6.1). */
+    private fun countBranches(verdict: TrustEngine.Verdict) {
+        for (b in verdict.branches) branchCounts[b] = (branchCounts[b] ?: 0L) + 1L
+        val kindKey = "kind_${verdict.kind.name}"
+        branchCounts[kindKey] = (branchCounts[kindKey] ?: 0L) + 1L
     }
 
     /**
@@ -392,6 +462,7 @@ class TrackingService : LifecycleService() {
             if (today != chunkDate) {
                 trackId = container.trackRepository.openDayChunk(today)
                 chunkDate = today
+                runCatching { container.fogRepository.recordBranches(emptyMap(), today) }
             }
         }
         // BURST-таймаут без новых фиксов (battery-eco 2.3): тихий возврат в сон.
@@ -422,6 +493,11 @@ class TrackingService : LifecycleService() {
             idleBurstPending = 0
             m
         }
+        val branchSnapshot: Map<String, Long> = synchronized(buffer) {
+            val copy = branchCounts.toMap()
+            branchCounts.clear()
+            copy
+        }
         // Тишина Fused (tracking-reliability 3.1): ecoSnapshot — не признак
         // данных (ECO_GPS_MS кладется всегда), иначе ветка no-fix была
         // недостижима и провалы доставки 5-12 минут оставались невидимыми
@@ -429,9 +505,14 @@ class TrackingService : LifecycleService() {
         val starved: Boolean = synchronized(buffer) {
             buffer.isEmpty() && rejected.isEmpty() && rawBuffer.isEmpty()
         }
-        // Эко-метрики сливаем даже в starved (иначе STAND-дни невидимы).
+        // Эко/ветки сливаем даже в starved (нули веток видимы всегда, 6.2).
         if (starved) {
             runCatching { container.fogRepository.recordEco(ecoSnapshot) }
+            runCatching { container.fogRepository.recordBranches(branchSnapshot, chunkDate) }
+            DevLog.i(
+                "TRACK", "day_branches",
+                EcoLogPayload.branchPayload(branchSnapshot)
+            )
             flushIfStarved()
             return
         }
@@ -515,6 +596,7 @@ class TrackingService : LifecycleService() {
                 }
             }
             if (rej.isNotEmpty()) container.fogRepository.recordRejected(rej)
+            container.fogRepository.recordBranches(branchSnapshot, chunkDate)
             val ecoToWrite = HashMap<String, Long>(ecoSnapshot)
             // Пробуждение БД (battery-eco 1.3): flush с реальной записью.
             ecoToWrite[FogRepository.ECO_FLUSH] = 1L
@@ -558,6 +640,12 @@ class TrackingService : LifecycleService() {
                     ecoFix = payloadFix, ecoStand = payloadStand, ecoGpsMs = payloadGpsMs,
                     prefixM = prefixM, prefixSrc = prefixSrc
                 )
+            )
+        }
+        if (branchSnapshot.isNotEmpty()) {
+            DevLog.i(
+                "TRACK", "day_branches",
+                EcoLogPayload.branchPayload(branchSnapshot)
             )
         }
     }

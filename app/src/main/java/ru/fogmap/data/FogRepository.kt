@@ -9,6 +9,7 @@ import ru.fogmap.data.db.VisitedCell
 import ru.fogmap.fog.FogGrid
 import ru.fogmap.fog.FogGrid.Cell
 import ru.fogmap.tracking.PendingGate
+import ru.fogmap.tracking.TrustEngine
 import java.time.LocalDate
 import java.time.temporal.WeekFields
 import java.util.Locale
@@ -82,16 +83,20 @@ class FogRepository(private val db: AppDatabase) {
             // батч) — подтвержденные открывают туман, заветированные закрыты.
             // Последние LAG точек всегда остаются ждать будущего.
             newBase = confirmPending(trackId, points, plan.corridorAnchor)
-            // 3. Дистанция по гаверсинусу: хвост дня + внутри батча, отрезки
-            // с недоверенными концами пропускаются (прыжок не раздувает км).
-            distance = batchDistance(points, plan.distanceTail)
+            // 3. Дистанция/время — только MOVING (fix-walk-fog-verdict 4.2):
+            // STAND-строки не накручивают км/мин.
+            val moving = points.filter { it.state == "MOVING" }
+            val distTail = plan.distanceTail?.takeIf { it.state == "MOVING" }
+            distance = batchDistance(moving, distTail)
             // 3б. Честная статистика трека — в той же транзакции (баг вечных 0 км).
             db.trackDao().addStats(trackId, distance, points.size, points.last().time)
-            // 4. Счетчики (материализованные, ЧП-5): дистанция/время — по записи,
-            // площадь — только по подтвержденным (шаг 2), в базовых эквивалентах.
+            // 4. Счетчики (материализованные, ЧП-5): дистанция/время — только
+            // движение, площадь — только по подтвержденным (шаг 2).
             val counters = db.counterDao()
             val distCm = (distance * 100).toLong()
-            val timeS = if (points.size > 1) (points.last().time - points.first().time) / 1000 else 0
+            val timeS = if (moving.size > 1) {
+                (moving.last().time - moving.first().time) / 1000
+            } else 0
             for (suffix in rangeSuffixesFor(date)) {
                 if (newBase > 0) counters.addOrInsert("area_cells_$suffix", newBase.toLong())
                 if (distCm > 0) counters.addOrInsert("distance_cm_$suffix", distCm)
@@ -162,9 +167,26 @@ class FogRepository(private val db: AppDatabase) {
     }
 
     /**
+     * Счётчики веток TrustEngine (tracking-reliability / fix-walk-fog-verdict 6.2):
+     * все ключи BRANCH_KEYS пишутся всегда, включая 0 — ноль ветки видим
+     * как кандидат на удаление правила, не как отсутствие данных.
+     */
+    suspend fun recordBranches(
+        counts: Map<String, Long>,
+        date: LocalDate = LocalDate.now()
+    ) {
+        db.withTransaction {
+            val counters = db.counterDao()
+            for ((key, n) in branchKeys(counts, rangeSuffixesFor(date))) {
+                counters.addOrInsert(key, n)
+            }
+        }
+    }
+
+    /**
      * Эко-метрики (battery-eco 1.3): материализованные счетчики `eco_<metric>_<suffix>`
      * в тех же разрезах all/день/неделя. Пишутся из flush пачкой вместе с rejected,
-     * поэтому в STAND-дни растут даже при 0 точек в БД.
+     * поэтому в STANDBY-дни растут даже при 0 точек в БД.
      */
     suspend fun recordEco(metrics: Map<String, Long>, date: LocalDate = LocalDate.now()) {
         if (metrics.isEmpty()) return
@@ -425,6 +447,24 @@ class FogRepository(private val db: AppDatabase) {
         }
 
         /**
+         * Чистые ключи счётчиков веток (tracking-reliability): схема
+         * `branch_<name>_<suffix>`, ВСЕ ветки BRANCH_KEYS включая нули.
+         * Тестируется без БД.
+         */
+        fun branchKeys(
+            counts: Map<String, Long>,
+            suffixes: List<String>
+        ): List<Pair<String, Long>> {
+            val out = ArrayList<Pair<String, Long>>(TrustEngine.BRANCH_KEYS.size * suffixes.size)
+            for (s in suffixes) {
+                for (name in TrustEngine.BRANCH_KEYS) {
+                    out.add("branch_${name}_$s" to (counts[name] ?: 0L))
+                }
+            }
+            return out
+        }
+
+        /**
          * Чистые ключи эко-метрик (battery-eco 1.3): схема `eco_<metric>_<suffix>`,
          * нули отсекаются как у rejected. Тестируется без БД.
          */
@@ -467,17 +507,24 @@ class FogRepository(private val db: AppDatabase) {
             BatchPlan(distanceTail = dayTail, corridorAnchor = wakeAnchor)
 
         /**
-         * Чистая дистанция батча: отрезок от хвоста прошлого батча (если он
-         * доверенный) + внутри батча только между доверенными соседями.
-         * Unit-тестируется без БД.
+         * Чистая дистанция батча: только MOVING-точки с доверием (STAND
+         * не накручивает км — fix-walk-fog-verdict 4.2). Отрезок от хвоста
+         * прошлого батча (если он доверенный MOVING) + внутри батча между
+         * доверенными соседями. STAND разрывает цепочку. Unit-тестируется.
          */
         fun batchDistance(
             points: List<RawPoint>,
             prev: RawPoint? = null
         ): Double {
             var d = 0.0
-            var anchor: RawPoint? = prev?.takeIf { it.trust >= FogGrid.TRUST_OPEN }
+            var anchor: RawPoint? = prev?.takeIf {
+                it.trust >= FogGrid.TRUST_OPEN && it.state == "MOVING"
+            }
             for (p in points) {
+                if (p.state != "MOVING") {
+                    anchor = null
+                    continue
+                }
                 if (p.trust >= FogGrid.TRUST_OPEN && anchor != null) {
                     d += haversineM(anchor.lat, anchor.lon, p.lat, p.lon)
                 }

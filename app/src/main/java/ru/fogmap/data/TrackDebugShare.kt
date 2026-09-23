@@ -39,7 +39,10 @@ object TrackDebugShare {
             trackByDay[day] = pts
         }
         val cells = db.fogDao().allCells()
-        val counters = db.counterDao().all().associate { it.key to it.value }
+        val counters = TrackDebugExport.withBranchZeros(
+            db.counterDao().all().associate { it.key to it.value },
+            TrackDebugExport.daysInRange(fromDay, toDay)
+        )
         val zip = TrackDebugExport.buildZip(
             TrackDebugExport.Input(
                 fromDay = fromDay, toDay = toDay,

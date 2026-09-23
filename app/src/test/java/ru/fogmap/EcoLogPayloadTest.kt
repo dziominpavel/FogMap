@@ -131,4 +131,39 @@ class EcoLogPayloadTest {
         val kl = EcoLogPayload.KEY_SOURCE.lowercase()
         assertTrue(!kl.contains("lat") && !kl.contains("lon"))
     }
+
+    @Test
+    fun `wifi и motion BURST несут окно 180с без координат`() {
+        // fix-walk-fog-verdict 5.3.
+        for (src in listOf("wifi", "motion")) {
+            val p = EcoLogPayload.ecoStatePayload(
+                mode = "eco", profile = "BURST",
+                fromProfile = "STANDBY", wakeM = 150L, verdict = "WAKE",
+                source = src
+            )
+            assertEquals(src, p[EcoLogPayload.KEY_SOURCE])
+            assertEquals(180_000L, p[EcoLogPayload.KEY_BURST_WINDOW_MS])
+            DevLog.buildPayloadJson(p)
+        }
+        val gps = EcoLogPayload.ecoStatePayload(
+            mode = "eco", profile = "BURST",
+            fromProfile = "STANDBY", wakeM = 150L, verdict = "WAKE",
+            source = "gps"
+        )
+        assertNull(gps[EcoLogPayload.KEY_BURST_WINDOW_MS])
+        val kl = EcoLogPayload.KEY_BURST_WINDOW_MS.lowercase()
+        assertTrue(!kl.contains("lat") && !kl.contains("lon"))
+    }
+
+    @Test
+    fun `branchPayload показывает нули всех веток`() {
+        val p = EcoLogPayload.branchPayload(mapOf("teleport" to 2L, "kind_WALK" to 7L))
+        for (b in ru.fogmap.tracking.TrustEngine.BRANCH_KEYS) {
+            assertTrue("нет $b", p.containsKey(b))
+        }
+        assertEquals(2L, p["teleport"])
+        assertEquals(7L, p["kind_WALK"])
+        assertEquals(0L, p["static"])
+        DevLog.buildPayloadJson(p)
+    }
 }

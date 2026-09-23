@@ -296,6 +296,8 @@ fun HistoryDetailScreen(nav: NavController, trackId: Long) {
     // Эко-метрики дня (battery-eco 1.3/1.4): режим и медиана префикса.
     var dayEco by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
     var dayPrefixMedianM by remember { mutableStateOf<Double?>(null) }
+    // Счётчики веток TrustEngine (fix-walk-fog-verdict 6.3): все ключи, включая 0.
+    var dayBranches by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
     val points = pointEnts.map { Point(it.lat, it.lon) }
     var renameOpen by remember { mutableStateOf(false) }
     var deleteOpen by remember { mutableStateOf(false) }
@@ -320,6 +322,7 @@ fun HistoryDetailScreen(nav: NavController, trackId: Long) {
                 dayRejected = app.container.statsRepository.rejectedBreakdown(range)
                 dayEco = app.container.statsRepository.ecoBreakdown(range)
                 dayPrefixMedianM = app.container.statsRepository.ecoPrefixMedianM(range)
+                dayBranches = app.container.statsRepository.branchBreakdown(range)
             }
         }
     }
@@ -413,6 +416,15 @@ fun HistoryDetailScreen(nav: NavController, trackId: Long) {
                                     color = MaterialTheme.colorScheme.error
                                 )
                             }
+                        }
+                        // Счётчики веток дня (6.3): все ключи, включая нули —
+                        // кандидаты на удаление правил, а не «нет данных».
+                        if (dayBranches.isNotEmpty()) {
+                            Text(
+                                "Ветки: " + dayBranches.entries
+                                    .joinToString { "${it.key}: ${it.value}" },
+                                style = MaterialTheme.typography.bodySmall
+                            )
                         }
                     }
                 }

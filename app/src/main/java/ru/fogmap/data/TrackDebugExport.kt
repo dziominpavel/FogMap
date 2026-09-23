@@ -99,7 +99,11 @@ object TrackDebugExport {
         sb.append("\"pendingLag\":").append(PendingGate.LAG).append(',')
         sb.append("\"vetoMinDistM\":").append(PendingGate.VETO_MIN_DIST_M).append(',')
         sb.append("\"trustOpen\":").append(FogGrid.TRUST_OPEN).append(',')
-        sb.append("\"trustHigh\":").append(FogGrid.TRUST_HIGH)
+        sb.append("\"trustHigh\":").append(FogGrid.TRUST_HIGH).append(',')
+        sb.append("\"speedMin\":").append(TrustEngine.SPEED_MIN_MPS).append(',')
+        sb.append("\"bikeAcc\":").append(LocationFilter.BIKE_ACCURACY_M).append(',')
+        sb.append("\"vehicleAcc\":").append(LocationFilter.VEHICLE_ACCURACY_M).append(',')
+        sb.append("\"burstWindowMs\":").append(ru.fogmap.tracking.EcoGovernor.BURST_WINDOW_MS)
         sb.append("}}")
         return sb.toString()
     }
@@ -110,6 +114,10 @@ object TrackDebugExport {
         sb.append("\"lon\":").append(r.lon).append(',')
         sb.append("\"acc\":").append(r.acc).append(',')
         sb.append("\"speed\":").append(r.speed?.toString() ?: "null").append(',')
+        sb.append("\"kind\":").append(
+            r.speed?.let { q(ru.fogmap.tracking.MotionKindClassifier.classify(it, null).name) }
+                ?: "null"
+        ).append(',')
         sb.append("\"mock\":").append(r.isMock).append(',')
         sb.append("\"filter\":").append(q(r.filter)).append(',')
         sb.append("\"state\":").append(r.state?.let { q(it) } ?: "null").append(',')
@@ -151,6 +159,33 @@ object TrackDebugExport {
         }
         sb.append("}")
         return sb.toString()
+    }
+
+    /**
+     * Счётчики веток для экспорта (6.2): все BRANCH_KEYS присутствуют
+     * с видимым 0, даже если день ещё не флашился. Чистое, тестируется.
+     */
+    fun withBranchZeros(
+        counters: Map<String, Long>,
+        days: List<String>
+    ): Map<String, Long> {
+        if (counters.keys.any { it.startsWith("branch_") && it.endsWith("_all") }) {
+            return counters
+        }
+        val out = HashMap(counters)
+        val suffixes = LinkedHashSet<String>()
+        suffixes.add("all")
+        for (day in days) {
+            runCatching {
+                FogRepository.rangeSuffixesFor(LocalDate.parse(day))
+            }.getOrDefault(emptyList()).forEach { suffixes.add(it) }
+        }
+        for (s in suffixes) {
+            for (name in TrustEngine.BRANCH_KEYS) {
+                out.putIfAbsent("branch_${name}_$s", 0L)
+            }
+        }
+        return out
     }
 
     private fun q(s: String): String {

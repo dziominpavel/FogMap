@@ -31,6 +31,8 @@ object EcoLogPayload {
     const val PREFIX_SRC_GAP = "gap"
     /** Фактическая длительность тишины Fused (fix-eco-signal-loss 3.1). */
     const val KEY_GAP_MS = "gap_ms"
+    /** Окно BURST wifi/motion, мс (fix-walk-fog-verdict 5.3: 180_000). */
+    const val KEY_BURST_WINDOW_MS = "burst_window_ms"
 
     /** Нет якоря / неприменимо (wake_m): число, а не null — парсер проще. */
     const val NO_ANCHOR_M = -1L
@@ -87,12 +89,24 @@ object EcoLogPayload {
         wakeM: Long?,
         verdict: String?,
         source: String? = null
-    ): Map<String, Any?> = mapOf(
-        KEY_MODE to mode,
-        KEY_PROFILE to profile,
-        KEY_FROM_PROFILE to fromProfile,
-        KEY_WAKE_M to (wakeM ?: NO_ANCHOR_M),
-        KEY_VERDICT to (verdict ?: "?"),
-        KEY_SOURCE to (source ?: EcoGovernor.WakeSource.GPS)
-    )
+    ): Map<String, Any?> = buildMap {
+        put(KEY_MODE, mode)
+        put(KEY_PROFILE, profile)
+        put(KEY_FROM_PROFILE, fromProfile)
+        put(KEY_WAKE_M, wakeM ?: NO_ANCHOR_M)
+        put(KEY_VERDICT, verdict ?: "?")
+        val src = source ?: EcoGovernor.WakeSource.GPS
+        put(KEY_SOURCE, src)
+        // fix-walk-fog-verdict 5.3: wifi/motion-BURST несет окно 180с.
+        if (src == EcoGovernor.WakeSource.WIFI || src == EcoGovernor.WakeSource.MOTION) {
+            put(KEY_BURST_WINDOW_MS, EcoGovernor.BURST_WINDOW_MS)
+        }
+    }
+
+    /**
+     * Счётчики веток TrustEngine (tracking-reliability): все ключи видимы,
+     * включая нули — кандидаты на удаление правил, не «нет данных».
+     */
+    fun branchPayload(counts: Map<String, Long>): Map<String, Any?> =
+        TrustEngine.BRANCH_KEYS.associateWith { counts[it] ?: 0L }
 }

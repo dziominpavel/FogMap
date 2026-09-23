@@ -65,13 +65,17 @@ class EcoGovernorTest {
     }
 
     @Test
-    fun `speed-latch границы`() {
+    fun `speed-latch границы на пороге 1_0`() {
         assertTrue(EcoGovernor.isSpeedLatch(10f, 10f))
         assertTrue(EcoGovernor.isSpeedLatch(5.01f, 25f))
-        assertFalse(EcoGovernor.isSpeedLatch(5.0f, 10f))
+        assertTrue(EcoGovernor.isSpeedLatch(5.0f, 10f))
+        assertTrue(EcoGovernor.isSpeedLatch(1.0f, 10f))
+        assertFalse(EcoGovernor.isSpeedLatch(0.99f, 10f))
         assertFalse(EcoGovernor.isSpeedLatch(10f, 25.1f))
         assertFalse(EcoGovernor.isSpeedLatch(null, 10f))
         assertFalse(EcoGovernor.isSpeedLatch(10f, null))
+        assertEquals(1.0, EcoGovernor.SPEED_LATCH_MS, 0.0)
+        assertEquals(180_000L, EcoGovernor.BURST_WINDOW_MS)
     }
 
     @Test
@@ -88,9 +92,37 @@ class EcoGovernorTest {
             null,
             EcoGovernor.burstTarget(TrustEngine.State.STAND, 10f, 60f)
         )
+        // Latch 1.0: ходьба/стойка на чистом фиксе уводит в ACTIVE.
+        assertEquals(
+            EcoGovernor.Profile.ACTIVE,
+            EcoGovernor.burstTarget(TrustEngine.State.STAND, 1f, 10f)
+        )
         assertEquals(
             null,
-            EcoGovernor.burstTarget(TrustEngine.State.STAND, 1f, 10f)
+            EcoGovernor.burstTarget(TrustEngine.State.STAND, 0.5f, 10f)
+        )
+    }
+
+    @Test
+    fun `MOVING не уходит в STANDBY даже со стояночной серией`() {
+        val now = 1_000_000L
+        assertFalse(
+            EcoGovernor.activeMayStandby(
+                standStreak = 10,
+                nowMs = now,
+                lastStandbyEnterMs = now - 600_000L,
+                lastSpeedLatchMs = 0L,
+                state = TrustEngine.State.MOVING
+            )
+        )
+        assertTrue(
+            EcoGovernor.activeMayStandby(
+                standStreak = 5,
+                nowMs = now,
+                lastStandbyEnterMs = now - 60_000L,
+                lastSpeedLatchMs = 0L,
+                state = TrustEngine.State.STAND
+            )
         )
     }
 

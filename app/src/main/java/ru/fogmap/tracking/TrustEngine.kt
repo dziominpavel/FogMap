@@ -98,10 +98,30 @@ object TrustEngine {
      */
     const val WAKE_FIRST_MIN_M = 100.0
     const val WAKE_FIRST_MAX_M = 1500.0
+    /**
+     * Единый порог speed-гейта STAND и eco speed-latch (fix-walk-fog-verdict):
+     * 1.0 м/с — ходьба/велосипед/машина ловятся одинаково рано.
+     */
+    const val SPEED_MIN_MPS = 1.0
+    /** Accuracy хуже — speed-гейт не применяется (скорость при грязном фиксе недостоверна). */
+    const val SPEED_GATE_MAX_ACC_M = 25f
+
+    /** Ключи счётчиков веток (tracking-reliability): всегда видимы, включая 0. */
+    val BRANCH_KEYS = listOf(
+        "static", "wake", "silence", "jump", "teleport", "turn", "speed_gate",
+        "kind_STILL", "kind_WALK", "kind_BIKE", "kind_VEHICLE"
+    )
 
     enum class State { STAND, MOVING, SUSPECT }
 
-    data class HistPoint(val time: Long, val lat: Double, val lon: Double, val acc: Float)
+    data class HistPoint(
+        val time: Long,
+        val lat: Double,
+        val lon: Double,
+        val acc: Float,
+        /** Скорость Fused из того же фикса (nullable), для speed-гейта и kind. */
+        val speed: Float? = null
+    )
 
     data class PrevState(
         val state: State,
@@ -109,7 +129,9 @@ object TrustEngine {
         val anchorLat: Double? = null,
         val anchorLon: Double? = null,
         val suspectLat: Double? = null,
-        val suspectLon: Double? = null
+        val suspectLon: Double? = null,
+        /** Последняя классификация движения для гистерезиса kind. */
+        val kind: MotionKind = MotionKind.STILL
     )
 
     data class Verdict(
@@ -124,13 +146,51 @@ object TrustEngine {
          * выкидывает стояночные нули из окна, иначе отравленная медиана
          * держит потолок 15 м/с еще ~8 точек (~1 км серого).
          */
-        val resetHistory: Boolean = false
+        val resetHistory: Boolean = false,
+        /** Сработавшие ветки вердикта для счётчиков (tracking-reliability). */
+        val branches: Set<String> = emptySet(),
+        /** Классификация движения этой точки. */
+        val kind: MotionKind = MotionKind.STILL
     )
 
+    /** Speed-гейт: speed ≥ SPEED_MIN_MPS при чистом accuracy запрещает STAND. */
+    internal fun speedGateBlocksStand(new: HistPoint): Boolean {
+        val speed = new.speed ?: return false
+        return speed >= SPEED_MIN_MPS && new.acc <= SPEED_GATE_MAX_ACC_M
+    }
+
+    /**
+     * STAND только при kind==STILL и без speed-гейта; иначе — MOVING без
+     * авт-openFog (openFog остаётся за series trust, fix-walk-fog-verdict).
+     */
+    private fun standOrMoving(
+        prev: PrevState?,
+        standTrust: Int,
+        kind: MotionKind,
+        speedGate: Boolean,
+        branches: Set<String> = emptySet()
+    ): Verdict {
+        if (!speedGate && kind == MotionKind.STILL) {
+            val next = PrevState(State.STAND, standTrust, kind = kind)
+            return Verdict(
+                State.STAND, standTrust, false, null, next,
+                branches = branches, kind = kind
+            )
+        }
+        val b = if (speedGate) branches + "speed_gate" else branches
+        val next = PrevState(State.MOVING, standTrust, kind = kind)
+        return Verdict(
+            State.MOVING, standTrust, false, null, next,
+            branches = b, kind = kind
+        )
+    }
+
     fun evaluate(prev: PrevState?, history: List<HistPoint>, new: HistPoint): Verdict {
+        val kind = MotionKindClassifier.classify(new.speed, prev?.kind)
+        val speedGate = speedGateBlocksStand(new)
         if (history.isEmpty()) {
-            val next = PrevState(State.STAND, TRUST_START)
-            return Verdict(State.STAND, TRUST_START, false, null, next)
+            // Холодный старт: одна точка не открывает туман (series trust).
+            return standOrMoving(prev, TRUST_START, kind, speedGate)
         }
         val last = history.last()
         val dtS = ((new.time - last.time) / 1000).coerceAtLeast(1)
@@ -147,8 +207,7 @@ object TrustEngine {
             )
             val back = FogRepository.haversineM(prev.anchorLat, prev.anchorLon, new.lat, new.lon)
             if (out > 1.0 && back < RETURN_RATIO * out) {
-                val next = PrevState(State.STAND, TRUST_RETURN)
-                return Verdict(State.STAND, TRUST_RETURN, false, null, next)
+                return standOrMoving(prev, TRUST_RETURN, kind, speedGate)
             }
         }
 
@@ -165,7 +224,7 @@ object TrustEngine {
         if (anchorAgeMs >= STATIC_MIN_SPAN_MS) {
             if (drift <= STATIC_RADIUS_M) {
                 return afterSilence(
-                    Verdict(State.STAND, TRUST_STAND, false, null, PrevState(State.STAND, TRUST_STAND)),
+                    standOrMoving(prev, TRUST_STAND, kind, speedGate, setOf("static")),
                     dtS
                 )
             }
@@ -174,7 +233,7 @@ object TrustEngine {
             // из уже подтвержденной статики. К MOVING/SUSPECT не применяется,
             // поэтому пробуждение и разгон не залипают.
             return afterSilence(
-                Verdict(State.STAND, TRUST_STAND, false, null, PrevState(State.STAND, TRUST_STAND)),
+                standOrMoving(prev, TRUST_STAND, kind, speedGate, setOf("static")),
                 dtS
             )
         }
@@ -191,8 +250,10 @@ object TrustEngine {
         ) {
             return Verdict(
                 State.MOVING, TRUST_START, true, null,
-                PrevState(State.MOVING, TRUST_START),
-                resetHistory = true
+                PrevState(State.MOVING, TRUST_START, kind = kind),
+                resetHistory = true,
+                branches = setOf("wake", "silence"),
+                kind = kind
             )
         }
         // 2г. Продолжение пробуждения (wake-balance-parking 3.1): вторая точка
@@ -211,8 +272,10 @@ object TrustEngine {
             ) {
                 return Verdict(
                     State.MOVING, TRUST_START, true, null,
-                    PrevState(State.MOVING, TRUST_START),
-                    resetHistory = true
+                    PrevState(State.MOVING, TRUST_START, kind = kind),
+                    resetHistory = true,
+                    branches = setOf("wake", "silence"),
+                    kind = kind
                 )
             }
         }
@@ -229,10 +292,12 @@ object TrustEngine {
                 val next = PrevState(
                     State.SUSPECT, TRUST_SUSPECT,
                     anchorLat = last.lat, anchorLon = last.lon,
-                    suspectLat = new.lat, suspectLon = new.lon
+                    suspectLat = new.lat, suspectLon = new.lon,
+                    kind = kind
                 )
                 return Verdict(
-                    State.SUSPECT, TRUST_SUSPECT, false, FogRepository.REJECT_JUMP, next
+                    State.SUSPECT, TRUST_SUSPECT, false, FogRepository.REJECT_JUMP, next,
+                    branches = setOf("teleport"), kind = kind
                 )
             }
         }
@@ -259,13 +324,22 @@ object TrustEngine {
         // не ловятся — порог скорости 8 м/с).
         val headingSuspect = prev != null && implied > HEADING_MIN_SPEED_MS &&
             history.size >= 2 && sharpTurn(history[history.size - 2], last, new)
-        if (implied > cap || headingSuspect) {
+        val jumpSuspect = implied > cap
+        if (jumpSuspect || headingSuspect) {
             val next = PrevState(
                 State.SUSPECT, TRUST_SUSPECT,
                 anchorLat = last.lat, anchorLon = last.lon,
-                suspectLat = new.lat, suspectLon = new.lon
+                suspectLat = new.lat, suspectLon = new.lon,
+                kind = kind
             )
-            return Verdict(State.SUSPECT, TRUST_SUSPECT, false, FogRepository.REJECT_JUMP, next)
+            val branches = buildSet {
+                if (jumpSuspect) add("jump")
+                if (headingSuspect) add("turn")
+            }
+            return Verdict(
+                State.SUSPECT, TRUST_SUSPECT, false, FogRepository.REJECT_JUMP, next,
+                branches = branches, kind = kind
+            )
         }
 
         // 5. Согласная точка: доверие растет медленно, плохой accuracy — в потолок.
@@ -275,7 +349,12 @@ object TrustEngine {
             when (prev?.state) {
                 State.MOVING -> {
                     val open = trust >= FogGrid.TRUST_OPEN
-                    Verdict(State.MOVING, trust, open, null, PrevState(State.MOVING, trust))
+                    val b = if (speedGate) setOf("speed_gate") else emptySet()
+                    Verdict(
+                        State.MOVING, trust, open, null,
+                        PrevState(State.MOVING, trust, kind = kind),
+                        branches = b, kind = kind
+                    )
                 }
                 else -> {
                     // Из STAND/SUSPECT: шевеление в пределах шума — еще стоим,
@@ -283,15 +362,20 @@ object TrustEngine {
                     // Существенное трогание после STAND помечает сброс окна
                     // (джиттер 0.5 м/с окно не сбрасывает — иначе статика
                     // никогда не наберет 5 точек).
-                    if (implied > 0.5) {
-                        val open = trust >= FogGrid.TRUST_OPEN
+                    // Speed-гейт/kind!=STILL: STAND невозможен → MOVING без авт-openFog.
+                    if (implied > 0.5 || speedGate || kind != MotionKind.STILL) {
+                        val open = !speedGate && trust >= FogGrid.TRUST_OPEN
+                        val b = if (speedGate) setOf("speed_gate") else emptySet()
                         Verdict(
-                            State.MOVING, trust, open, null, PrevState(State.MOVING, trust),
-                            resetHistory = prev?.state == State.STAND && implied > PULL_RESET_MIN_MS
+                            State.MOVING, trust, open, null,
+                            PrevState(State.MOVING, trust, kind = kind),
+                            resetHistory = prev?.state == State.STAND && implied > PULL_RESET_MIN_MS,
+                            branches = b,
+                            kind = kind
                         )
                     } else {
                         val standTrust = minOf(TRUST_STAND, (prev?.trust ?: TRUST_START) + TRUST_STEP)
-                        Verdict(State.STAND, standTrust, false, null, PrevState(State.STAND, standTrust))
+                        standOrMoving(prev, standTrust, kind, speedGate, setOf("static"))
                     }
                 }
             },
@@ -325,8 +409,13 @@ object TrustEngine {
      */
     private fun afterSilence(v: Verdict, dtS: Long): Verdict {
         if (dtS <= SILENCE_RESET_S || v.state == State.SUSPECT) return v
-        val next = PrevState(v.next.state, TRUST_START)
-        return v.copy(trust = TRUST_START, openFog = v.state == State.MOVING, next = next)
+        val next = PrevState(v.next.state, TRUST_START, kind = v.next.kind)
+        return v.copy(
+            trust = TRUST_START,
+            openFog = v.state == State.MOVING,
+            next = next,
+            branches = v.branches + "silence"
+        )
     }
 
     /** Медиана implied-скоростей соседних пар истории (устойчива к 1 выбросу). */

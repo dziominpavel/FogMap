@@ -30,11 +30,11 @@ object EcoGovernor {
     const val STANDBY_MIN_MS = 30_000L
     const val STANDBY_DIST_M = 0f
 
-    /** BURST: короткий HIGH 6 сек для решения, окно 60–90 сек. */
+    /** BURST: HIGH 6 сек для решения, окно до 180 сек (fix-walk-fog-verdict 5.1). */
     const val BURST_INTERVAL_MS = 6_000L
     const val BURST_MIN_MS = 5_000L
     const val BURST_DIST_M = 0f
-    const val BURST_WINDOW_MS = 75_000L
+    const val BURST_WINDOW_MS = 180_000L
 
     /** Подтверждение статики: окно TrustEngine (5 точек в 25 м). */
     const val STAND_CONFIRM_STREAK = 5
@@ -46,12 +46,11 @@ object EcoGovernor {
     const val STANDBY_DEBOUNCE_MS = 30_000L
 
     /**
-     * Speed-latch машины/поезда (fog-eco-reliability): достоверная скорость Fused
-     * выводит BURST в ACTIVE без ожидания серии TrustEngine. Порог accuracy
-     * повторяет контракт LocationFilter.MAX_ACCURACY_M (25 м).
+     * Speed-latch (fix-walk-fog-verdict): единый порог [TrustEngine.SPEED_MIN_MPS]
+     * = 1.0 м/с (ходьба/велосипед/машина). Accuracy не хуже 25 м.
      */
-    const val SPEED_LATCH_MS = 5.0
-    const val SPEED_LATCH_MAX_ACC_M = 25f
+    const val SPEED_LATCH_MS = TrustEngine.SPEED_MIN_MPS
+    const val SPEED_LATCH_MAX_ACC_M = TrustEngine.SPEED_GATE_MAX_ACC_M
 
     /**
      * Удержание ACTIVE после скорости (fog-eco-reliability, диапазон спеки 3–5 мин):
@@ -86,12 +85,12 @@ object EcoGovernor {
     fun isWakeDistance(distM: Long): Boolean = distM.toDouble() >= WAKE_DISTANCE_M
 
     /**
-     * Speed-latch (fog-eco-reliability, чистое, тестируется): достоверная скорость
-     * машины/поезда. Строго выше 5 м/с, accuracy не хуже 25 м.
+     * Speed-latch (fix-walk-fog-verdict, чистое): единый порог ≥ 1.0 м/с,
+     * accuracy не хуже 25 м — ходьба/велосипед/машина из BURST в ACTIVE.
      */
     fun isSpeedLatch(speedMps: Float?, accM: Float?): Boolean =
         speedMps != null && accM != null &&
-            speedMps.toDouble() > SPEED_LATCH_MS && accM <= SPEED_LATCH_MAX_ACC_M
+            speedMps.toDouble() >= SPEED_LATCH_MS && accM <= SPEED_LATCH_MAX_ACC_M
 
     /**
      * Решение STANDBY (fog-eco-reliability, чистое, тестируется): GPS-смещение
@@ -109,17 +108,20 @@ object EcoGovernor {
         if (state == TrustEngine.State.MOVING || isSpeedLatch(speedMps, accM)) Profile.ACTIVE else null
 
     /**
-     * Готовность ACTIVE уйти в STANDBY (fog-eco-reliability, чистое, тестируется):
-     * STAND-серия + дебаунс + удержание после скорости. lastSpeedLatchMs <= 0 —
-     * скорости еще не было, удержание не применяется.
+     * Готовность ACTIVE уйти в STANDBY (fix-walk-fog-verdict 5.2): STAND-серия
+     * + дебаунс + удержание после скорости + guard — при MOVING-вердикте сон
+     * запрещено (двойная страховка; в сервисе streak и так сбрасывается).
+     * lastSpeedLatchMs <= 0 — скорости еще не было, удержание не применяется.
      */
     fun activeMayStandby(
         standStreak: Int,
         nowMs: Long,
         lastStandbyEnterMs: Long,
-        lastSpeedLatchMs: Long
+        lastSpeedLatchMs: Long,
+        state: TrustEngine.State = TrustEngine.State.STAND
     ): Boolean =
-        standStreak >= STAND_CONFIRM_STREAK &&
+        state != TrustEngine.State.MOVING &&
+            standStreak >= STAND_CONFIRM_STREAK &&
             nowMs - lastStandbyEnterMs >= STANDBY_DEBOUNCE_MS &&
             (lastSpeedLatchMs <= 0L || nowMs - lastSpeedLatchMs >= ACTIVE_SPEED_HOLD_MS)
 

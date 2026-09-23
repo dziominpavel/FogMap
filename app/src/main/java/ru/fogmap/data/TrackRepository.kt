@@ -119,6 +119,17 @@ class StatsRepository(private val db: AppDatabase) {
     }
 
     /**
+     * Счётчики веток TrustEngine за период (fix-walk-fog-verdict 6.3):
+     * ВСЕ ключи BRANCH_KEYS, включая видимые нули — кандидаты на удаление
+     * правил, не «нет данных».
+     */
+    suspend fun branchBreakdown(range: String): Map<String, Long> {
+        val c = db.counterDao()
+        return ru.fogmap.tracking.TrustEngine.BRANCH_KEYS
+            .associateWith { c.get("branch_${it}_$range") ?: 0L }
+    }
+
+    /**
      * Медиана префикса в метрах по гистограмме (fix-eco-signal-loss 4.4):
      * среднее подменялось выбросами-разрывами, теперь бюджет считается
      * по распределению. Значение — номинал бакета (50/150/350/750 м):

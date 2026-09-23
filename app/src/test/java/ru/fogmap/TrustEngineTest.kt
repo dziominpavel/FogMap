@@ -335,4 +335,104 @@ class TrustEngineTest {
         val normal = drive(8).takeLast(12).map { it.state to it.countReject }
         assertEquals(normal, dense)
     }
+
+    // --- fix-walk-fog-verdict: speed-гейт, kind, branches ---
+
+    private fun ptSpeed(
+        lat: Double, speed: Float?, acc: Float = 10f, dtS: Long = 8
+    ): TrustEngine.HistPoint {
+        t += dtS * 1000
+        return TrustEngine.HistPoint(
+            time = t, lat = lat, lon = 27.0, acc = acc, speed = speed
+        )
+    }
+
+    @Test
+    fun `speed гейт 1_0 запрещает STAND и не открывает туман в одиночку`() {
+        // 1.1/1.3: speed≥1 при acc≤25 → STAND невозможен, openFog=false.
+        val v = TrustEngine.evaluate(null, emptyList(), ptSpeed(53.9, speed = 1.0f))
+        assertEquals(TrustEngine.State.MOVING, v.state)
+        assertFalse(v.openFog)
+        assertTrue("speed_gate в ветках: ${v.branches}", "speed_gate" in v.branches)
+        assertEquals(ru.fogmap.tracking.MotionKind.WALK, v.kind)
+    }
+
+    @Test
+    fun `speed гейт не срабатывает при грязном accuracy`() {
+        // acc>25 — гейт не применяется; kind держится STILL гистерезисом
+        // (speed 1.0 < 1.3 от STILL), STAND возможен.
+        var prev: TrustEngine.PrevState? = null
+        val history = ArrayList<TrustEngine.HistPoint>()
+        val still = ptSpeed(53.9, speed = null)
+        val v0 = TrustEngine.evaluate(prev, history, still)
+        prev = v0.next
+        history.add(still)
+        val dirty = ptSpeed(53.9, speed = 1.0f, acc = 30f)
+        val v = TrustEngine.evaluate(prev, history, dirty)
+        assertEquals(TrustEngine.State.STAND, v.state)
+        assertFalse(v.openFog)
+        assertFalse("speed_gate при acc>25", "speed_gate" in v.branches)
+    }
+
+    @Test
+    fun `kind WALK запрещает STAND даже без speed в HistPoint`() {
+        // kind уже классифицирован сервисом/историей; без speed в точке
+        // классификация падает на prev — здесь проверяем через speed.
+        val still = TrustEngine.evaluate(null, emptyList(), ptSpeed(53.9, speed = null))
+        assertEquals(TrustEngine.State.STAND, still.state)
+        // Явная ходьба в статике: kind=WALK → MOVING без авт-openFog.
+        var prev: TrustEngine.PrevState? = null
+        val history = ArrayList<TrustEngine.HistPoint>()
+        val stand = ptSpeed(53.9, speed = 0.1f)
+        val v0 = TrustEngine.evaluate(prev, history, stand)
+        prev = v0.next
+        history.add(stand)
+        val walk = ptSpeed(53.9 + 0.00002, speed = 1.5f)
+        val v1 = TrustEngine.evaluate(prev, history, walk)
+        assertEquals(TrustEngine.State.MOVING, v1.state)
+        assertFalse(v1.openFog)
+        assertEquals(ru.fogmap.tracking.MotionKind.WALK, v1.kind)
+    }
+
+    @Test
+    fun `ветки вердикта заполняются static jump teleport kind`() {
+        val office = (0 until 6).map { ptSpeed(53.9 + it * 0.00002, speed = 0.2f) }
+        val standV = run(office).last()
+        assertTrue("static: ${standV.branches}", "static" in standV.branches)
+        assertEquals(ru.fogmap.tracking.MotionKind.STILL, standV.kind)
+
+        val teleport = run(office + ptSpeed(53.9 + 0.036, speed = null, dtS = 1800)).last()
+        assertEquals(TrustEngine.State.SUSPECT, teleport.state)
+        assertTrue("teleport: ${teleport.branches}", "teleport" in teleport.branches)
+
+        // kind_* всегда заполнен для каждой точки.
+        val speeds = run(listOf(ptSpeed(53.9, speed = 12f), ptSpeed(53.92, speed = 12f)))
+        for (v in speeds) {
+            assertTrue(v.kind.name in setOf("STILL", "WALK", "BIKE", "VEHICLE"))
+        }
+        assertEquals(ru.fogmap.tracking.MotionKind.VEHICLE, speeds.last().kind)
+    }
+
+    @Test
+    fun `afterSilence добавляет ветку silence`() {
+        val stand = (0 until 6).map { ptSpeed(53.9, speed = null) }
+        val afterGap = ptSpeed(53.9 + 0.0036, speed = 2f, dtS = 300)
+        val v = run(stand + listOf(afterGap)).last()
+        assertEquals(TrustEngine.State.MOVING, v.state)
+        assertTrue("silence: ${v.branches}", "silence" in v.branches)
+        assertTrue("wake: ${v.branches}", "wake" in v.branches)
+    }
+
+    @Test
+    fun `HistPoint несет speed для гейта без второго источника`() {
+        val hp = ptSpeed(53.9, speed = 3.3f, acc = 12f)
+        assertEquals(3.3f, hp.speed!!, 1e-6f)
+        assertTrue(TrustEngine.speedGateBlocksStand(hp))
+        val dirty = hp.copy(acc = 30f)
+        assertFalse(TrustEngine.speedGateBlocksStand(dirty))
+        val slow = hp.copy(speed = 0.5f)
+        assertFalse(TrustEngine.speedGateBlocksStand(slow))
+        val none = hp.copy(speed = null)
+        assertFalse(TrustEngine.speedGateBlocksStand(none))
+    }
 }

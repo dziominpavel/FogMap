@@ -10,10 +10,13 @@ import ru.fogmap.data.TrackDebugImport
 import ru.fogmap.data.db.RawFixEntity
 
 class TrackDebugImportTest {
-    private fun raw(day: String, time: Long, lat: Double = 55.0, acc: Float = 10f) =
+    private fun raw(
+        day: String, time: Long, lat: Double = 55.0, acc: Float = 10f,
+        speed: Float? = 5f
+    ) =
         RawFixEntity(
             day = day, time = time, lat = lat, lon = 37.0, acc = acc,
-            speed = 5f, isMock = false, filter = "ok",
+            speed = speed, isMock = false, filter = "ok",
             state = "MOVING", trust = 70, openFog = 1
         )
 
@@ -59,13 +62,22 @@ class TrackDebugImportTest {
 
     @Test
     fun `перепрожка дропает статику и считает отбросы`() {
-        // 6 точек в кластере 20 м + дрейф acc 60: все в STAND/дроп, точек движения 0.
+        // 6 точек в кластере без speed (STAND-дроп) + дрейф acc 60 (мягкий reject).
         val rows = (0 until 6).map { i ->
-            raw("2026-09-19", i * 8_000L, lat = 55.0 + i * 0.00001)
-        } + raw("2026-09-19", 48_000L, acc = 60f)
+            raw("2026-09-19", i * 8_000L, lat = 55.0 + i * 0.00001, speed = null)
+        } + raw("2026-09-19", 48_000L, acc = 60f, speed = 5f)
         val (accepted, rej) = TrackDebugImport.reprocessDay(rows)
         assertEquals(0, accepted.size)
         assertTrue((rej["accuracy"] ?: 0) >= 1)
+    }
+
+    @Test
+    fun `мягкий accuracy не пишет точку но учтён в rejected`() {
+        // kind=BIKE (speed 5), acc 60 > 40 → soft: история есть, out пуст для этой точки.
+        val rows = listOf(raw("2026-09-19", 0L, acc = 60f, speed = 5f))
+        val (accepted, rej) = TrackDebugImport.reprocessDay(rows)
+        assertTrue(accepted.isEmpty())
+        assertEquals(1L, rej["accuracy"])
     }
 
     @Test

@@ -3,6 +3,15 @@
 Формат: `MAJOR.MINOR.PATCH` (база — файл `version`, полная сборка —
 `<base>.<count>-g<sha>` из git). Правила бампа: `docs/versioning.md`.
 
+## [1.5.1] — 2026-09-23 (PATCH)
+
+Пеший туман и честный вердикт (change `fix-walk-fog-verdict`, код; 23/24 задач, поле 8.3 открыто):
+- Speed-гейт STAND: `SPEED_MIN_MPS = 1.0` (единый с eco latch); `MotionKind` STILL/WALK/BIKE/VEHICLE с гистерезисом ±0.3; STAND только при `kind==STILL`.
+- Per-type accuracy: STILL/WALK 25, BIKE 40, VEHICLE 100 м; soft-path (raw + история trust, без track/openFog); hard reject MOCK/NO_ACCURACY/BAD_SPEED.
+- STAND пишется в `track_points` в ACTIVE/BURST (`openFog=false`); дистанция/timeS только MOVING; `BURST_WINDOW_MS` 180_000; guard `activeMayStandby` при MOVING.
+- Счётчики веток TrustEngine (`static/wake/silence/jump/teleport/turn/speed_gate/kind_*`) в counters, DevLog и UI «Ветки»; `kind` в raw export.
+- Тесты зелёные; реплей 23.09 PASS (openBase 168 ≥ 150 — порог ячеек в тесте снижен с 2000 по решению владельца); спеки синкнуты; APK собран.
+
 ## [1.5.0] — 2026-09-22 (MINOR)
 
 Единый экранный источник позиции и видимость первого запуска (change `first-launch-visibility`, код; архивация с 4/13 задачами, полевая приёмка открыта):

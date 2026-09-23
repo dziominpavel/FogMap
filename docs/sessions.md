@@ -12,6 +12,34 @@
 
 ---
 
+## 2026-09-23 — fix-walk-fog-verdict: apply (код + тесты + реплей + APK)
+
+Что сделали:
+- Apply полного change: speed-гейт `SPEED_MIN_MPS=1.0` (TrustEngine+eco latch), `HistPoint.speed`, `MotionKind` STILL/WALK/BIKE/VEHICLE ±0.3, STAND только `kind==STILL`, per-type acc 25/40/100 (soft-path без track/openFog), STAND→трек в ACTIVE/BURST (`openFog=false`), `batchDistance`/`timeS` только MOVING, `BURST_WINDOW_MS=180_000`, guard `activeMayStandby` при MOVING, счётчики веток `BRANCH_KEYS` в counters/DevLog/UI («Ветки» в карточке дня), `kind` в raw export, `withBranchZeros`.
+- Тесты: `gradlew testDebugUnitTest` — все зелёные; новые/обновлены MotionKind, WalkFogReplay, TrustEngine, EcoGovernor, LocationFilter, TrackStats, TrackDebug*, EcoLogPayload, DayTrackHistory.
+- Реплей 23.09 (PASS): 0× STAND при speed≥1 и acc≤25; wifi+BURST в полевом логе; kind не только STILL (WALK/BIKE/VEHICLE есть); дистанция 919 м ≫ 338; openBase=168, openFog=19/22 accepted, soft-acc rejects=139.
+- `openspec validate fix-walk-fog-verdict` — valid (23/24 задач закрыты; 8.3 — поле вечером).
+- APK: `dist\FogMap-release-latest.apk` (1.5.0.26-g0dd24cb-dirty-20260923-1354, ~61 МБ) — установка на устройство владельцем.
+
+Решения:
+- Критерий design «ячейки ≥2000» на данных 23.09 недостижим (soft-path не открывает 139 точек, kind=STILL → кисть 15 м, бейзлайн fog.jsonl 65 клеток z=21). Порог в `WalkFogReplayTest` снижен до openBase≥150 — выбор владельца (см. tasks.md 7.1).
+- Wake-ветка TrustEngine дополнительно пишет `silence`.
+
+Чеклист вечерней прогулки (задача 8.3):
+1. Установить `dist\FogMap-release-latest.apk`, старт трекинга без краша.
+2. Прогулка; снять: `fog-*.jsonl`, track-debug zip, counters.json.
+3. В выгрузке: `eco_state` с `source=wifi` и `burst_window_ms=180000`; openFog-точки >4 (бейзлайн 19); kind на улице не только STILL; `branch_*` и `kind_*` в counters; дистанция ≫ 338 м.
+4. Сверить с PASS 7.1, записать результат в sessions.md.
+
+Открытые вопросы:
+- Поле 8.3: разбор вечерней выгрузки — отдельная сессия.
+- `python scripts/check-version.py` не запускается (Store-заглушка) — нужен реальный Python или правка окружения.
+- Бамп 1.5.1 (PATCH) + CHANGELOG + sessions «Версия:» — только по команде владельца перед коммитом; коммит/push — по команде.
+
+Версия: 1.5.0 → 1.5.1 (PATCH, speed-гейт + MotionKind + wifi-BURST 180с + counters веток; бамп при коммите по команде).
+
+---
+
 ## 2026-09-22 — first-launch-visibility: propose → apply → поле → архив (4/13)
 
 Что сделали:

@@ -9,7 +9,10 @@ import ru.fogmap.tracking.LocationFilter
 
 class TrackStatsTest {
     private fun pt(lat: Double, lon: Double = 37.0, time: Long = 0L) =
-        RawPoint(time = time, lat = lat, lon = lon, acc = 10f, speed = 1f)
+        RawPoint(
+            time = time, lat = lat, lon = lon, acc = 10f, speed = 1f,
+            trust = 100, openFog = true, state = "MOVING"
+        )
 
     @Test
     fun `батч из N точек дает дистанцию гаверсинуса`() {
@@ -86,5 +89,42 @@ class TrackStatsTest {
             .filter { it != LocationFilter.Reason.OK }
             .map { it.key }
         assertTrue(FogRepository.REJECT_REASONS.containsAll(filterKeys))
+    }
+
+    @Test
+    fun `STAND-строки не накручивают дистанцию и рвут цепочку`() {
+        // fix-walk-fog-verdict 4.2: пауза статики рвёт цепочку MOVING.
+        val a = pt(55.0, time = 0)
+        val stand = pt(55.001, time = 8000).copy(state = "STAND")
+        val b = pt(55.002, time = 16000)
+        val d = FogRepository.batchDistance(listOf(a, stand, b))
+        // STAND разрывает цепочку → отрезки a→stand и stand→b не суммируются.
+        assertEquals(0.0, d, 1e-9)
+        // Без STAND a→b = 0.002° ≈ 222м (два шага по 0.001°).
+        val dMove = FogRepository.batchDistance(listOf(a, b))
+        assertTrue("ожидалось ~222 м, получено $dMove", dMove > 220 && dMove < 225)
+    }
+
+    @Test
+    fun `STAND-хвост прошлого батча не линкуется`() {
+        val prev = pt(55.0).copy(state = "STAND")
+        val d = FogRepository.batchDistance(listOf(pt(55.001, time = 8000)), prev)
+        assertEquals(0.0, d, 1e-9)
+    }
+
+    @Test
+    fun `ключи веток всегда с видимыми нулями`() {
+        val keys = FogRepository.branchKeys(emptyMap(), listOf("all", "day_2026-09-23"))
+        val names = keys.map { it.first }.toSet()
+        for (b in ru.fogmap.tracking.TrustEngine.BRANCH_KEYS) {
+            assertTrue("нет ключа branch_${b}_all", names.contains("branch_${b}_all"))
+            assertTrue("нет дня branch_${b}", names.contains("branch_${b}_day_2026-09-23"))
+        }
+        assertTrue(keys.all { it.second == 0L })
+        val withHits = FogRepository.branchKeys(
+            mapOf("teleport" to 3L), listOf("all")
+        )
+        assertTrue(withHits.contains("branch_teleport_all" to 3L))
+        assertTrue(withHits.contains("branch_static_all" to 0L))
     }
 }
