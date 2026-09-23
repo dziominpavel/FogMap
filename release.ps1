@@ -85,8 +85,12 @@ $ExistingTag = & git tag --list $Tag
 if ($ExistingTag) {
     Fail "Тег $Tag уже существует — существующий тег и релиз НЕ перезаписываются. Увеличьте version."
 }
-$RepoName = (& git remote get-url origin) -replace '^.*/', '' -replace '\.git$', ''
-if (-not $RepoName) { Fail "Не найден remote origin — релиз некуда публиковать." }
+$OriginUrl = & git remote get-url origin
+if ($OriginUrl -notmatch 'github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?$') {
+    Fail "Не найден remote origin с github.com — релиз некуда публиковать."
+}
+$RepoFullName = "$($Matches[1])/$($Matches[2])"
+$RepoName = $Matches[2]
 
 # --- 6. Имена ассетов по конвенции -----------------------------------------
 # <Project>-<version>.apk | <Project>-<version>-win-x64.zip | <Project>-<version>-win-x64.exe
@@ -132,6 +136,6 @@ if ($LASTEXITCODE -ne 0) {
     Fail "gh release create завершился ошибкой, тег откачен. Причина: $ghError"
 }
 
-Write-Host "[OK] Релиз $Tag опубликован: https://github.com/$RepoName/releases/tag/$Tag" -ForegroundColor Green
+Write-Host "[OK] Релиз $Tag опубликован: https://github.com/$RepoFullName/releases/tag/$Tag" -ForegroundColor Green
 Write-Host "     Ассеты: $($Staged.Count) шт. (скрипт v$SCRIPT_VERSION)"
 exit 0

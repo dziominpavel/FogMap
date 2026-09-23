@@ -3,6 +3,14 @@
 Формат: `MAJOR.MINOR.PATCH` (база — файл `version`, полная сборка —
 `<base>.<count>-g<sha>` из git). Правила бампа: `docs/versioning.md`.
 
+## [1.5.2] — 2026-09-23 (PATCH)
+
+Контракт витрины «Мои приложения» и публикация релиза одной командой (change `add-app-store`, репо стора):
+- `store.yaml` (name/description/icon/requirements), `assets/icon.png` 512×512 (сборка из adaptive-лаунчера), `screenshots/` (3 заглушки 1080×2400 до съёмки владельцем); `dist/` полностью в `.gitignore`.
+- Единый release-скрипт v1.0.0 (`release.ps1`/`release.bat`): файл `version` → проверки (непустой `dist/`, иконка, авторизованный `gh`, отсутствие существующего тега) → `git tag vX.Y.Z` → `gh release create` с ассетами из `dist/` (имя ассета приводится к `<Project>-<version>.<ext>`).
+- `build-apk.bat`: опциональный флаг `release` («сборка → релиз» одной командой); фикс предсуществующего бага — `echo ... (versionCode N)` внутри `if (...)` ронял cmd (`on was unexpected at this time.`) после любой сборки.
+- Пилотный релиз `v1.5.1` опубликован: ассет `FogMap-1.5.1.apk` (64 369 520 байт).
+
 ## [1.5.1] — 2026-09-23 (PATCH)
 
 Пеший туман и честный вердикт (change `fix-walk-fog-verdict`, код; 23/24 задач, поле 8.3 открыто):

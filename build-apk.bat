@@ -121,7 +121,7 @@ for %%F in ("%LATEST%") do echo   Size: %%~zF bytes
 
 if "%INSTALL%"=="1" (
   echo.
-  echo === Installing FogMap !FULLVER! (versionCode !VERCODE!) on device ===
+  echo === Installing FogMap !FULLVER! ^(!VERCODE!^) on device ===
   where adb >nul 2>&1
   if errorlevel 1 (
     echo [ERROR] adb not found in PATH. Open the project in Android Studio or add platform-tools to PATH.
