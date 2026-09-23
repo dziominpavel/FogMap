@@ -23,6 +23,9 @@ ApiKeys.kt
 .DS_Store
 Thumbs.db
 
+# Release staging: локальные артефакты для релиза, в git не попадают
+dist/
+
 # Field data: персональные геоданные, в git НЕ коммитить
 dist/fog-*.jsonl
 dist/photo_*

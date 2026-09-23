@@ -1,12 +1,14 @@
 @echo off
 rem Build APK and copy it to dist\ so you don't dig in app\build\outputs\...
-rem Usage: build-apk.bat [debug] [install]
+rem Usage: build-apk.bat [debug] [install] [release]
 rem   no args  - builds release for real phones (arm64-v8a + armeabi-v7a)
 rem   debug    - builds debuggable APK (package ru.fogmap.dev, all ABIs) for
 rem              log capture via adb run-as; installs side-by-side with release,
 rem              data does NOT overlap. Debug is for investigation only,
 rem              not for everyday tracking.
 rem   install  - also installs the APK via adb (may follow the debug word)
+rem   release  - after a successful build, publish dist\ as a GitHub release
+rem              via release.bat (tag vX.Y.Z from the file `version`)
 rem Result: dist\FogMap-release-latest.apk ("take this") + versioned history
 rem copy in dist\archive\. Full version comes from Gradle
 rem (file `version` + git count/sha, see app/build.gradle.kts), e.g.
@@ -35,19 +37,27 @@ if not exist "%JAVA_HOME%\bin\java.exe" (
 
 set "MODE=release"
 set "INSTALL=0"
+set "RELEASE=0"
 if /i "%~1"=="debug" set "MODE=debug"
 if /i "%~1"=="install" set "INSTALL=1"
+if /i "%~1"=="release" set "RELEASE=1"
 if /i "%~2"=="install" set "INSTALL=1"
-if not "%~1"=="" if /i not "%~1"=="debug" if /i not "%~1"=="install" (
-  echo Usage: %~nx0 [debug] [install]
+if /i "%~2"=="release" set "RELEASE=1"
+if /i "%~3"=="release" set "RELEASE=1"
+if not "%~1"=="" if /i not "%~1"=="debug" if /i not "%~1"=="install" if /i not "%~1"=="release" (
+  echo Usage: %~nx0 [debug] [install] [release]
   exit /b 2
 )
-if not "%~2"=="" if /i not "%~2"=="install" (
-  echo Usage: %~nx0 [debug] [install]
+if not "%~2"=="" if /i not "%~2"=="debug" if /i not "%~2"=="install" if /i not "%~2"=="release" (
+  echo Usage: %~nx0 [debug] [install] [release]
+  exit /b 2
+)
+if not "%~3"=="" if /i not "%~3"=="debug" if /i not "%~3"=="install" if /i not "%~3"=="release" (
+  echo Usage: %~nx0 [debug] [install] [release]
   exit /b 2
 )
 if "%~1"=="" if not "%~2"=="" (
-  echo Usage: %~nx0 [debug] [install]
+  echo Usage: %~nx0 [debug] [install] [release]
   exit /b 2
 )
 
@@ -129,6 +139,18 @@ if "%INSTALL%"=="1" (
     adb shell dumpsys package ru.fogmap.dev | findstr /c:"versionName" /c:"versionCode"
   ) else (
     adb shell dumpsys package ru.fogmap | findstr /c:"versionName" /c:"versionCode"
+  )
+)
+
+if "%RELEASE%"=="1" (
+  echo.
+  echo === Publishing GitHub release via release.bat ===
+  call "%~dp0release.bat"
+  if errorlevel 1 (
+    echo.
+    echo [ERROR] Release failed. See the log above.
+    pause
+    exit /b 1
   )
 )
 
