@@ -39,6 +39,23 @@
 
 ---
 
+## 2026-09-24 — коммиты: achievements+regions + region-gen
+
+Что сделали:
+- Коммит `0c9e674`: apply+архивы add-achievements и add-region-progress (37 файлов, 1884+).
+- Коммит region-gen (amend): генератор регионов + source OSM; `temp_geo/` → `region-gen/` (папка постоянная, не временная), `.gitignore` на логи/промежуточные выгрузки.
+
+Решения:
+- Переносить в git только генератор/OSM-снимок/query; field-логи и gradle-musor — ignore.
+
+Открытые вопросы:
+- Поле 4.3 и 5.3 (см. записи ниже) — владельцу.
+- `add-friends` (0/21) — следующий change по команде.
+
+Версия: без бампа (в Unreleased; бамп на релизе) — только коммиты/доки.
+
+---
+
 ## 2026-09-24 — add-achievements: apply + архивация (код + тесты, поле открыто)
 
 Что сделали:
@@ -67,7 +84,7 @@
 ## 2026-09-24 — add-region-progress: apply (код + тесты, поле открыто)
 
 Что сделали:
-- Данные OSM: Overpass снимок 2026-09-24 (`temp_geo/regions_geom.json`, 13 relation admin_level=2/4/6); генератор `temp_geo/build_regions.js` (сборка outer-колец, Douglas-Peucker city 0.0004° / oblast 0.001° / republic 0.002°, inner отброшены — Минск попадает в minsk+minsk_oblast+belarus).
+- Данные OSM: Overpass снимок 2026-09-24 (`region-gen/regions_geom.json`, 13 relation admin_level=2/4/6); генератор `region-gen/build_regions.js` (сборка outer-колец, Douglas-Peucker city 0.0004° / oblast 0.001° / republic 0.002°, inner отброшены — Минск попадает в minsk+minsk_oblast+belarus).
 - `region/Regions.kt`: 13 регионов, кольца как строки `"lon lat;…"` + `parseRings()` в `by lazy` — иначе `<clinit>` превышал лимит 64KB на метод JVM (`MethodTooLargeException`); площади Wikipedia (integer → `.0` для Double).
 - `region/RegionGeometry.kt`: bbox pre-filter + ray casting + `regionsAt` + `counterKey("region_<id>_cells")`.
 - `FogRepository`: блок инкремента counters в транзакции `confirmPending` после `insertChunked(fresh)`; companion `regionIncrements(cells)`.
@@ -83,7 +100,6 @@
 
 Открытые вопросы:
 - 4.3 ручная проверка на устройстве (13 регионов, % после прогулки) — владельцу.
-- `temp_geo/` (8.78 МБ raw + генератор) untracked — в коммит не брать без команды (снимок OSM, не код).
 
 Версия: 1.5.2 → 1.6.0 (MINOR, region-progress: полигоны 13 регионов, counters, экран прогресса; бамп при архивации change).
 
