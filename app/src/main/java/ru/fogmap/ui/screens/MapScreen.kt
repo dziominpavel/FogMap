@@ -87,6 +87,7 @@ import ru.fogmap.fog.FogGrid.Cell
 import ru.fogmap.map.FogMask
 import ru.fogmap.map.FogMask.HolePx
 import ru.fogmap.map.FogMaskOverlay
+import ru.fogmap.map.RegionBordersLayer
 import ru.fogmap.tracking.TrackingPreconditions
 import ru.fogmap.tracking.TrackingService
 import ru.fogmap.tracking.TrustEngine
@@ -515,6 +516,16 @@ fun MapScreen(nav: NavController) {
         }
         val camListenerRef = remember(camListener) {
             java.lang.ref.WeakReference(camListener)
+        }
+        // Границы регионов (add-region-borders): полилинии MapKit живут внутри
+        // MapView → под вуалью, видны только в открытых дырках. Первое включение
+        // создаёт объекты, дальше — только isVisible; городские контуры ниже
+        // z10 прячутся (зум-гейт из слушателя камеры).
+        val bordersLayer = remember(mapView) { RegionBordersLayer(mapView.mapWindow.map) }
+        val regionBordersOn = paused[PrefsKeys.REGION_BORDERS] ?: false
+        val showBorderCities = regionBordersOn && camZoom >= RegionBordersLayer.CITY_MIN_ZOOM
+        LaunchedEffect(regionBordersOn, showBorderCities) {
+            bordersLayer.show(regionBordersOn, showBorderCities)
         }
         DisposableEffect(lifecycle, mapView, useNightMap) {
             // Ночной режим — только при смене темы, не при каждой рекомпозиции.

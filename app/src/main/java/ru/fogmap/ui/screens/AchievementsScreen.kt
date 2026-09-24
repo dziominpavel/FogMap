@@ -141,7 +141,7 @@ private fun AchievementCard(row: AchievementRow) {
                 Text(row.def.title, style = MaterialTheme.typography.titleSmall)
                 Spacer(Modifier.height(4.dp))
                 if (unlocked) {
-                    val date = SimpleDateFormat("d MMMM yyyy", Locale("ru"))
+                    val date = SimpleDateFormat("d MMMM yyyy", Locale.forLanguageTag("ru"))
                         .format(Date(row.unlockedAt!!))
                     Text(
                         "Открыто $date",

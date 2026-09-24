@@ -23,6 +23,13 @@ object Achievements {
     val AREA_KM2_THRESHOLDS = listOf(10.0, 100.0, 1000.0)
     val STREAK_DAY_THRESHOLDS = listOf(3, 7, 30)
 
+    /**
+     * Порог засчёта «100% региона»: полное открытие даёт ~98–102% из-за
+     * представительной широты (центроид против распределения клеток) —
+     * без допуска ачивка могла бы не выстрелить никогда (spec achievements).
+     */
+    const val FULL_OPEN_PERCENT = 99.0
+
     fun regionId(regionId: String, percent: Int): String = "region_${regionId}_$percent"
     fun areaId(km2: Double): String = "area_${km2.toLong()}"
     fun streakId(days: Int): String = "streak_$days"
@@ -76,7 +83,8 @@ object AchievementChecker {
         val out = ArrayList<String>()
         for ((regionId, percent) in regionPercents) {
             for (p in Achievements.REGION_PERCENTS) {
-                if (percent >= p) {
+                val threshold = if (p >= 100) Achievements.FULL_OPEN_PERCENT else p.toDouble()
+                if (percent >= threshold) {
                     val id = Achievements.regionId(regionId, p)
                     if (id !in alreadyUnlocked) out.add(id)
                 }
@@ -98,9 +106,9 @@ object AchievementChecker {
     }
 
     /** Процент региона из materialized counters (та же формула, что в RegionProgress). */
-    fun regionPercent(regionCells: Long, totalAreaKm2: Double): Double {
+    fun regionPercent(regionCells: Long, totalAreaKm2: Double, lat: Double = FogGrid.BELARUS_MEAN_LAT): Double {
         if (totalAreaKm2 <= 0.0) return 0.0
-        return FogGrid.areaKm2(regionCells) / totalAreaKm2 * 100.0
+        return FogGrid.areaKm2(regionCells, lat) / totalAreaKm2 * 100.0
     }
 
     /**

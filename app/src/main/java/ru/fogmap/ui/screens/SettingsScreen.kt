@@ -54,6 +54,8 @@ fun SettingsScreen(nav: NavController) {
     val prefs by app.container.dataStore.data.collectAsState(initial = preferencesOf())
     val themeMode = prefs[ru.fogmap.data.PrefsKeys.THEME_MODE] ?: ThemeModes.DEFAULT
     val paused = prefs[ru.fogmap.data.PrefsKeys.PAUSED] ?: false
+    // Границы регионов на карте (add-region-borders), default false.
+    val regionBorders = prefs[ru.fogmap.data.PrefsKeys.REGION_BORDERS] ?: false
     // ВРЕМЕННОЕ (dev-logging): тумблер диагностики.
     val diagEnabled = prefs[ru.fogmap.data.PrefsKeys.DIAG_ENABLED] ?: true
     // Полная версия (app-versioning): FULL_VERSION уже содержит базу + count + sha + dirty-метку.
@@ -117,6 +119,29 @@ fun SettingsScreen(nav: NavController) {
                         checked = paused,
                         onCheckedChange = { v ->
                             scope.launch { app.container.settingsRepository.setPaused(v) }
+                        }
+                    )
+                }
+            }
+            // --- Карта (add-region-borders) ---
+            Text("Карта", style = MaterialTheme.typography.titleMedium)
+            Card(Modifier.fillMaxWidth()) {
+                androidx.compose.foundation.layout.Row(
+                    Modifier.fillMaxWidth().padding(16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Границы регионов на карте", style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            "Видны только в открытых участках под туманом",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                    Switch(
+                        checked = regionBorders,
+                        onCheckedChange = { v ->
+                            scope.launch { app.container.settingsRepository.setRegionBorders(v) }
                         }
                     )
                 }

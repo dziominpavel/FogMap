@@ -29,6 +29,8 @@ object PrefsKeys {
     val ANCHOR_LAT = doublePreferencesKey("standby_anchor_lat")
     val ANCHOR_LON = doublePreferencesKey("standby_anchor_lon")
     val ANCHOR_TIME = longPreferencesKey("standby_anchor_time")
+    /** Границы регионов на карте (add-region-borders): default false. */
+    val REGION_BORDERS = booleanPreferencesKey("region_borders")
 }
 
 object ThemeModes {
@@ -60,6 +62,9 @@ class SettingsRepository(
     /** Последний эко-профиль (battery-eco 2.4). */
     val ecoProfile: Flow<String> =
         store.data.map { it[PrefsKeys.ECO_PROFILE] ?: EcoProfiles.ACTIVE }
+    /** Границы регионов на карте (add-region-borders), default false. */
+    val regionBorders: Flow<Boolean> =
+        store.data.map { it[PrefsKeys.REGION_BORDERS] ?: false }
 
     suspend fun setPaused(v: Boolean) { store.edit { it[PrefsKeys.PAUSED] = v } }
     suspend fun setOnboardingDone() { store.edit { it[PrefsKeys.ONBOARDING_DONE] = true } }
@@ -88,6 +93,9 @@ class SettingsRepository(
             it[PrefsKeys.ANCHOR_TIME] = timeMs
         }
     }
+
+    /** Границы регионов на карте (add-region-borders): слой отрисовки вкл/выкл. */
+    suspend fun setRegionBorders(v: Boolean) { store.edit { it[PrefsKeys.REGION_BORDERS] = v } }
 
     suspend fun resetAll(fog: FogRepository) = fog.clearAll()
 }

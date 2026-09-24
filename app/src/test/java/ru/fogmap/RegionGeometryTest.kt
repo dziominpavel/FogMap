@@ -115,6 +115,78 @@ class RegionGeometryTest {
     }
 
     @Test
+    fun `эталонная площадь полигонов - сверка с известными числами`() {
+        // Числа из аудита геометрии (add-region-borders): упрощённые полигоны OSM
+        // против официальных площадей; диапазоны допускают упрощение DP.
+        val byId = Regions.BY_ID
+        val gomelOblast = byId.getValue("gomel_oblast").totalAreaKm2
+        assertTrue("gomel_oblast=$gomelOblast", gomelOblast in 39_000.0..41_500.0)
+        val gomelCity = byId.getValue("gomel").totalAreaKm2
+        assertTrue("gomel=$gomelCity", gomelCity in 138.0..152.0)
+        val minskCity = byId.getValue("minsk").totalAreaKm2
+        assertTrue("minsk=$minskCity", minskCity in 350.0..380.0)
+        val belarus = byId.getValue("belarus").totalAreaKm2
+        assertTrue("belarus=$belarus", belarus in 204_000.0..211_000.0)
+        // Области выкладывают республику (в аудите расхождение 0,02%).
+        val oblasts = listOf(
+            "brest_oblast", "vitebsk_oblast", "gomel_oblast",
+            "grodno_oblast", "minsk_oblast", "mogilev_oblast"
+        ).sumOf { byId.getValue(it).totalAreaKm2 }
+        assertEquals("области vs республика", belarus, oblasts, belarus * 0.01)
+    }
+
+    @Test
+    fun `выбор колец - вложенные дырки пропускаются, внешние остаются`() {
+        val main = listOf(0.0 to 0.0, 10.0 to 0.0, 10.0 to 10.0, 0.0 to 10.0)
+        val hole = listOf(4.0 to 4.0, 6.0 to 4.0, 6.0 to 6.0, 4.0 to 6.0)
+        val exclave = listOf(20.0 to 20.0, 21.0 to 20.0, 21.0 to 21.0, 20.0 to 21.0)
+        val outer = RegionGeometry.outerRings(listOf(main, hole, exclave))
+        assertEquals(2, outer.size)
+        assertTrue("main", main in outer)
+        assertTrue("exclave", exclave in outer)
+        assertFalse("hole", hole in outer)
+        // Площадь не учитывает вложенные кольца: дырка не вычитается, не прибавляется.
+        assertEquals(
+            RegionGeometry.ringAreaKm2(main) + RegionGeometry.ringAreaKm2(exclave),
+            RegionGeometry.areaKm2(listOf(main, hole, exclave)),
+            1e-9
+        )
+    }
+
+    @Test
+    fun `незамкнутое кольцо замыкается, уже замкнутое не меняется`() {
+        val open = listOf(0.0 to 0.0, 1.0 to 0.0, 1.0 to 1.0)
+        val closed = RegionGeometry.closedRing(open)
+        assertEquals(4, closed.size)
+        assertEquals(closed.first(), closed.last())
+        assertEquals(closed, RegionGeometry.closedRing(closed))
+    }
+
+    @Test
+    fun `drawRings региона - кольца замкнуты и не вложены`() {
+        for (r in Regions.ALL) {
+            assertTrue("${r.id} rings", r.drawRings.isNotEmpty())
+            for (ring in r.drawRings) {
+                assertTrue("${r.id} closed", ring.size >= 4)
+                assertEquals("${r.id} ends", ring.first(), ring.last())
+            }
+        }
+        // Ни одно кольцо не лежит внутри другого того же региона.
+        for (r in Regions.ALL) {
+            for ((i, ring) in r.drawRings.withIndex()) {
+                val (probeLon, probeLat) = ring.first()
+                for ((j, other) in r.drawRings.withIndex()) {
+                    if (i == j) continue
+                    assertFalse(
+                        "${r.id}: кольцо $i внутри $j",
+                        RegionGeometry.ringIn(other, probeLat, probeLon)
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
     fun `regionIncrements - ячейка в Минске даёт minsk+belarus+minsk_oblast`() {
         val cell = FogGrid.cellFor(53.90, 27.56)
         val inc = FogRepository.regionIncrements(setOf(cell))

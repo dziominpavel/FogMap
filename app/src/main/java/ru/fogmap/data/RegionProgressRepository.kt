@@ -17,7 +17,9 @@ data class RegionProgress(
 
 /**
  * Чтение materialized counters `region_<id>_cells` (add-region-progress).
- * Процент — производная: (cells × area_per_cell) / totalAreaKm2 × 100.
+ * Процент — производная: (cells × area_per_cell(широта центроида)) /
+ * totalAreaKm2, где totalAreaKm2 — площадь полигонов региона
+ * (change add-region-borders, spec region-progress).
  */
 class RegionProgressRepository(private val db: AppDatabase) {
 
@@ -25,7 +27,7 @@ class RegionProgressRepository(private val db: AppDatabase) {
         val counters = db.counterDao()
         return Regions.ALL.map { region ->
             val cells = counters.get(RegionGeometry.counterKey(region.id)) ?: 0L
-            val open = FogGrid.areaKm2(cells)
+            val open = FogGrid.areaKm2(cells, region.centroidLat)
             val percent = if (region.totalAreaKm2 > 0.0) {
                 (open / region.totalAreaKm2) * 100.0
             } else {

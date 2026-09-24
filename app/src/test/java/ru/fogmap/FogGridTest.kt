@@ -73,8 +73,23 @@ class FogGridTest {
     }
 
     @Test
-    fun `площадь — базовые эквиваленты на номинал клетки`() {
-        assertEquals(150 * FogGrid.AREA_PER_BASE_CELL_KM2, FogGrid.areaKm2(150), 1e-12)
+    fun `площадь — поправка cos²(широты), глобальные метрики на средней широте Беларуси`() {
+        assertEquals(
+            150 * FogGrid.areaPerBaseCellKm2(FogGrid.BELARUS_MEAN_LAT),
+            FogGrid.areaKm2(150), 1e-12
+        )
         assertEquals(0.0, FogGrid.areaKm2(0), 0.0)
+        // На экваторе — номинал без поправки.
+        assertEquals(
+            FogGrid.AREA_PER_BASE_CELL_KM2,
+            FogGrid.areaPerBaseCellKm2(0.0), 1e-12
+        )
+        // Точная проверка cos²: на 60° ровно четверть номинала.
+        assertEquals(
+            0.25,
+            FogGrid.areaPerBaseCellKm2(60.0) / FogGrid.AREA_PER_BASE_CELL_KM2, 1e-9
+        )
+        // На широте Минска площадь клетки почти в 3 раза меньше номинала (спека fog-grid).
+        assertTrue(FogGrid.areaPerBaseCellKm2(53.9) < 0.4 * FogGrid.AREA_PER_BASE_CELL_KM2)
     }
 }

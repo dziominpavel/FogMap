@@ -39,7 +39,7 @@ class AchievementRepository(private val db: AppDatabase) {
         val unlocked = unlockedIds()
         val regionPercents = Regions.ALL.associate { r ->
             val cells = counters.get(ru.fogmap.region.RegionGeometry.counterKey(r.id)) ?: 0L
-            r.id to AchievementChecker.regionPercent(cells, r.totalAreaKm2)
+            r.id to AchievementChecker.regionPercent(cells, r.totalAreaKm2, r.centroidLat)
         }
         val areaCells = counters.get("area_cells_all") ?: 0L
         val areaKm2 = ru.fogmap.fog.FogGrid.areaKm2(areaCells)

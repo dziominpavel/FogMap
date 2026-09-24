@@ -31,8 +31,20 @@ object FogGrid {
 
     /** Номинальный размер базовой клетки, м (экватор; в Минске ~11 м). */
     const val CELL_BASE_M = 40075000.0 / (1 shl BASE_Z) // ≈19.11
-    /** Номинальная площадь базовой клетки, км² (без учета широты, как раньше). */
+    /**
+     * Номинальная площадь базовой клетки, км² — на экваторе (CELL_BASE_M²).
+     * Реальная площадь на широте lat — [areaPerBaseCellKm2] (× cos² широты):
+     * без этой поправки все км² и проценты завышались в ~2,9 раза
+     * на широте Минска (spec fog-grid, change add-region-borders).
+     */
     const val AREA_PER_BASE_CELL_KM2 = 0.000365
+
+    /**
+     * Средняя широта Беларуси — представительная широта для глобальных метрик
+     * (статистика, история, суммарная площадь), у которых нет регионального
+     * контекста. Для метрик региона берётся центроид региона.
+     */
+    const val BELARUS_MEAN_LAT = 53.7
 
     // Пороги скорости (м/с): 10 км/ч ≈ 2.78 м/с, 50 км/ч ≈ 13.89 м/с.
     const val SPEED_WALK_MS = 2.7778
@@ -205,8 +217,22 @@ object FogGrid {
     fun cellBottomRight(x1: Int, y1: Int, z: Int = BASE_Z): Pair<Double, Double> =
         cellTopLeft(x1 + 1, y1 + 1, z).let { (lat, lon) -> lat to lon }
 
-    /** Площадь в км² по счетчику базовых эквивалентов. */
-    fun areaKm2(baseCells: Long): Double = baseCells * AREA_PER_BASE_CELL_KM2
+    /**
+     * Реальная площадь базовой клетки на широте, км²: номинал экватора × cos².
+     * На широте Минска (53,9°) ≈ 0,000127 км² (клетка ~11 м), на экваторе — 0,000365.
+     */
+    fun areaPerBaseCellKm2(lat: Double): Double {
+        val c = Math.cos(Math.toRadians(lat))
+        return AREA_PER_BASE_CELL_KM2 * c * c
+    }
+
+    /**
+     * Открытая площадь в км² по счетчику базовых эквивалентов. Широта не
+     * региональная — средняя широта Беларуси (глобальные метрики); региональные
+     * метрики передают центроид региона (spec fog-grid).
+     */
+    fun areaKm2(baseCells: Long, lat: Double = BELARUS_MEAN_LAT): Double =
+        baseCells * areaPerBaseCellKm2(lat)
 
     // --- Внутренняя геометрия ---
 
