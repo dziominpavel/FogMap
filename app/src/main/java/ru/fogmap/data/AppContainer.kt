@@ -24,14 +24,18 @@ class AppContainer(val context: Context) {
             AppDatabase.MIGRATION_2_3,
             AppDatabase.MIGRATION_3_4,
             AppDatabase.MIGRATION_4_5,
-            AppDatabase.MIGRATION_5_6
+            AppDatabase.MIGRATION_5_6,
+            AppDatabase.MIGRATION_6_7
         )
         .build()
 
     val dataStore: DataStore<Preferences> = context.applicationContext.prefs
 
-    val fogRepository = FogRepository(db)
-    val trackRepository = TrackRepository(db)
+    val achievementRepository = AchievementRepository(db)
+    val fogRepository = FogRepository(db, achievementRepository)
+    val trackRepository = TrackRepository(db, achievementRepository)
     val statsRepository = StatsRepository(db)
     val settingsRepository = SettingsRepository(dataStore, db)
+    val regionProgressRepository = RegionProgressRepository(db)
+    // Achievements: тот же db, миграция 6→7 уже в addMigrations выше.
 }

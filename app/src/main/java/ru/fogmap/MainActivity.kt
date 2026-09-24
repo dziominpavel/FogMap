@@ -11,11 +11,13 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.yandex.mapkit.MapKitFactory
 import ru.fogmap.data.ThemeModes
+import ru.fogmap.ui.screens.AchievementsScreen
 import ru.fogmap.ui.screens.DiagDiagnosticsScreen
 import ru.fogmap.ui.screens.HistoryDetailScreen
 import ru.fogmap.ui.screens.HistoryScreen
 import ru.fogmap.ui.screens.MapScreen
 import ru.fogmap.ui.screens.OnboardingScreen
+import ru.fogmap.ui.screens.RegionProgressScreen
 import ru.fogmap.ui.screens.SettingsScreen
 import ru.fogmap.ui.screens.StatsScreen
 import ru.fogmap.ui.theme.FogMapTheme
@@ -51,6 +53,8 @@ fun FogMapNav() {
     NavHost(navController = nav, startDestination = "map") {
         composable("map") { MapScreen(nav) }
         composable("stats") { StatsScreen(nav) }
+        composable("regions") { RegionProgressScreen(nav) }
+        composable("achievements") { AchievementsScreen(nav) }
         composable("history") { HistoryScreen(nav) }
         composable("history/{id}") { backStack ->
             HistoryDetailScreen(nav, backStack.arguments?.getString("id")?.toLongOrNull() ?: -1)

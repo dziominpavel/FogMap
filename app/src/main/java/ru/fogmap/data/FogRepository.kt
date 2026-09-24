@@ -8,6 +8,7 @@ import ru.fogmap.data.db.TrackPointEntity
 import ru.fogmap.data.db.VisitedCell
 import ru.fogmap.fog.FogGrid
 import ru.fogmap.fog.FogGrid.Cell
+import ru.fogmap.region.RegionGeometry
 import ru.fogmap.tracking.PendingGate
 import ru.fogmap.tracking.TrustEngine
 import java.time.LocalDate
@@ -45,7 +46,10 @@ internal fun TrackPointEntity.toRaw() =
  * Транзакция «батч точек → ячейки → счетчики» (задача 2.3).
  * Атомарность «точка → туман → статистика»: всё в одной Room-транзакции.
  */
-class FogRepository(private val db: AppDatabase) {
+class FogRepository(
+    private val db: AppDatabase,
+    private val achievements: AchievementRepository? = null
+) {
 
     data class BatchResult(val newCells: Int, val distanceM: Double)
 
@@ -103,6 +107,9 @@ class FogRepository(private val db: AppDatabase) {
                 if (timeS > 0) counters.addOrInsert("time_s_$suffix", timeS)
             }
         }
+        // Ачивки (add-achievements 2.5): после коммита транзакции — триггеры
+        // по % регионов и суммарной площади; тост по событию unlocked.
+        if (newBase > 0) achievements?.checkAndUnlock()
         return BatchResult(newBase, distance)
     }
 
@@ -146,6 +153,14 @@ class FogRepository(private val db: AppDatabase) {
         val open = openBaseCells(confirmedRaw, anchorRaw)
         val fresh = filterCovered(open, fetchAncestors(open))
         val n = insertChunked(fresh)
+        // Региональные счетчики (add-region-progress 2.1): в той же транзакции,
+        // после filterCovered, по центрам новых базовых ячеек.
+        if (n > 0) {
+            val counters = db.counterDao()
+            for ((regionId, delta) in regionIncrements(fresh)) {
+                counters.addOrInsert(RegionGeometry.counterKey(regionId), delta)
+            }
+        }
         promoteCascade(fresh)
         db.trackDao().markOpened(res.confirmed.map { it.id })
         return n
@@ -505,6 +520,24 @@ class FogRepository(private val db: AppDatabase) {
 
         fun planBatch(dayTail: RawPoint?, wakeAnchor: RawPoint?): BatchPlan =
             BatchPlan(distanceTail = dayTail, corridorAnchor = wakeAnchor)
+
+        /**
+         * Инкременты региональных counters для новых ячеек (add-region-progress):
+         * по центру ячейки — все регионы, чей полигон её содержит; вес =
+         * weightOf(z) в базовых эквивалентах. Чистая — unit-тесты без БД.
+         */
+        fun regionIncrements(cells: Set<Cell>): Map<String, Long> {
+            if (cells.isEmpty()) return emptyMap()
+            val out = HashMap<String, Long>()
+            for (cell in cells) {
+                val (lat, lon) = FogGrid.cellCenter(cell.x, cell.y)
+                val weight = FogGrid.weightOf(cell.z)
+                for (region in RegionGeometry.regionsAt(lat, lon)) {
+                    out.merge(region.id, weight, Long::plus)
+                }
+            }
+            return out
+        }
 
         /**
          * Чистая дистанция батча: только MOVING-точки с доверием (STAND

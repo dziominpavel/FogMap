@@ -3,6 +3,23 @@
 Формат: `MAJOR.MINOR.PATCH` (база — файл `version`, полная сборка —
 `<base>.<count>-g<sha>` из git). Правила бампа: `docs/versioning.md`.
 
+## [1.7.0] — 2026-09-24 (MINOR)
+
+Система достижений — осознанный pivot на геймификацию (change `add-achievements`, поле 5.3 открыто):
+- Room-таблица `achievements` (только unlocked, миграция v6→v7), определения — Kotlin-константы: 45 ачивок (13 регионов × 10/50/100%, площадь 10/100/1000 км², серия 3/7/30 дней).
+- `AchievementChecker` (чистые триггеры, unit-тесты), вызов после инкремента counters в `FogRepository.appendPoints` и в `TrackRepository.startDayChunk` (streak `streak_days`/`streak_days_best`/`streak_last_day`).
+- Экран «Достижения»: группы Регионы/Площадь/Серии, unlocked с датой, locked с условием, Toast при разблокировке; вход из Stats.
+- `docs/vision.md` — pivot зафиксирован; спека `achievements` синкнута (4 requirements); change в `archive/2026-09-24-add-achievements` (15/16, поле 5.3).
+- Тесты: BUILD SUCCESSFUL (AchievementCheckerTest 11/11).
+
+## [1.6.0] — 2026-09-24 (MINOR)
+
+Прогресс открытия по 13 регионам Беларуси (change `add-region-progress`, поле 4.3 открыто):
+- Полигоны регионов из OSM (6 областных городов, 6 областей, республика; outer-only, ray casting + bbox pre-filter); хардкод в `region/Regions.kt`.
+- Materialized counters `region_<id>_cells` инкрементируются в той же транзакции, что и открытие ячеек FogRepository; точка в зоне пересечения (Минск в Минской области) попадает в оба счётчика.
+- Экран «Прогресс по регионам» из Stats: группы Города/Области/Республика, км² и производный %, сортировка по убыванию процента.
+- Unit-тесты: 25 suites зелёные (RegionGeometryTest 13/13); спека `region-progress` синкнута; change в `archive/2026-09-24-add-region-progress` (12/13, поле 4.3).
+
 ## [1.5.2] — 2026-09-23 (PATCH)
 
 Контракт витрины «Мои приложения» и публикация релиза одной командой (change `add-app-store`, репо стора):

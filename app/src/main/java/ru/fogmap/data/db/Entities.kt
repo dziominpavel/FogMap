@@ -67,6 +67,29 @@ data class CounterEntity(
     val value: Long
 )
 
+/** Разблокированная ачивка (add-achievements): только unlocked, locked — в коде. */
+@Entity(tableName = "achievements")
+data class AchievementEntity(
+    @PrimaryKey val id: String,
+    val unlockedAt: Long
+)
+
+@Dao
+interface AchievementDao {
+    /** IGNORE: повторная разблокировка не создаёт вторую строку. */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insert(row: AchievementEntity): Long
+
+    @Query("SELECT * FROM achievements ORDER BY unlockedAt DESC")
+    suspend fun getAll(): List<AchievementEntity>
+
+    @Query("SELECT EXISTS(SELECT 1 FROM achievements WHERE id = :id)")
+    suspend fun isUnlocked(id: String): Boolean
+
+    @Query("SELECT id FROM achievements")
+    suspend fun unlockedIds(): List<String>
+}
+
 @Dao
 interface FogDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)

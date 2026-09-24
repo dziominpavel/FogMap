@@ -1,9 +1,11 @@
 package ru.fogmap.ui.screens
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -13,8 +15,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Tab
@@ -70,14 +75,14 @@ fun StatsScreen(nav: NavController) {
             } else if (s.tracks == 0L && s.areaKm2 == 0.0) {
                 StatsEmptyState(onCta = { nav.navigate("map") })
             } else {
-                StatsContent(s)
+                StatsContent(nav, s)
             }
         }
     }
 }
 
 @Composable
-private fun StatsContent(s: Stats) {
+private fun StatsContent(nav: NavController, s: Stats) {
     LazyVerticalGrid(
         columns = GridCells.Fixed(2),
         contentPadding = PaddingValues(16.dp),
@@ -94,6 +99,14 @@ private fun StatsContent(s: Stats) {
                 )
             }
         }
+        // Вход в прогресс по регионам (add-region-progress 3.3).
+        item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(2) }) {
+            RegionsEntryCard(onClick = { nav.navigate("regions") })
+        }
+        // Вход в достижения (add-achievements 3.4).
+        item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(2) }) {
+            AchievementsEntryCard(onClick = { nav.navigate("achievements") })
+        }
         items(
             listOf(
                 "Площадь" to "%.2f км²".format(s.areaKm2),
@@ -108,6 +121,56 @@ private fun StatsContent(s: Stats) {
                     Text(label, style = MaterialTheme.typography.bodyMedium)
                 }
             }
+        }
+    }
+}
+
+/** Вход в прогресс по регионам (add-region-progress 3.3). */
+@Composable
+private fun RegionsEntryCard(onClick: () -> Unit) {
+    Card(Modifier.fillMaxWidth().clickable { onClick() }) {
+        Row(
+            Modifier.fillMaxWidth().padding(16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text("Прогресс по регионам", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "13 регионов: города, области, республика",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null
+            )
+        }
+    }
+}
+
+/** Вход в достижения (add-achievements 3.4). */
+@Composable
+private fun AchievementsEntryCard(onClick: () -> Unit) {
+    Card(Modifier.fillMaxWidth().clickable { onClick() }) {
+        Row(
+            Modifier.fillMaxWidth().padding(16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text("Достижения", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "Регионы, площадь, серии дней",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null
+            )
         }
     }
 }

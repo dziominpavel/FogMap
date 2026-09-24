@@ -9,7 +9,10 @@ import java.time.LocalDate
 import java.time.temporal.WeekFields
 import java.util.Locale
 
-class TrackRepository(private val db: AppDatabase) {
+class TrackRepository(
+    private val db: AppDatabase,
+    private val achievements: AchievementRepository? = null
+) {
     /**
      * Сутки-чанк день-атом (day-track-history): максимум одна строка на дату.
      * Чистая вставка (счетчики tracks_*, имя — дата). Старые треки-процессы
@@ -34,6 +37,9 @@ class TrackRepository(private val db: AppDatabase) {
         db.counterDao().addOrInsert("tracks_day_${date}", 1)
         val week = date.get(WeekFields.of(Locale.getDefault()).weekOfYear())
         db.counterDao().addOrInsert("tracks_week_${week}-${date.year}", 1)
+        // Серия дней (add-achievements 2.3): чистая логика nextStreak + ачивки.
+        achievements?.bumpStreak(date.toEpochDay())
+        achievements?.checkAndUnlock()
         return id
     }
 

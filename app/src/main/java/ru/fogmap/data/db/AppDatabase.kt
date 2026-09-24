@@ -10,8 +10,11 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  * Миграции с версии 1, без шифрования (решение ЧП-7).
  */
 @Database(
-    entities = [VisitedCell::class, TrackEntity::class, TrackPointEntity::class, CounterEntity::class, RawFixEntity::class],
-    version = 6,
+    entities = [
+        VisitedCell::class, TrackEntity::class, TrackPointEntity::class,
+        CounterEntity::class, RawFixEntity::class, AchievementEntity::class
+    ],
+    version = 7,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -19,6 +22,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun trackDao(): TrackDao
     abstract fun counterDao(): CounterDao
     abstract fun rawFixDao(): RawFixDao
+    abstract fun achievementDao(): AchievementDao
 
     companion object {
         /** v1 -> v2: индекс по track_points(trackId) для быстрого чтения трека. */
@@ -90,6 +94,20 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_raw_fixes_day ON raw_fixes(day)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_raw_fixes_time ON raw_fixes(time)")
+            }
+        }
+
+        /**
+         * v6 -> v7: ачивки (add-achievements). Только разблокированные;
+         * определения — Kotlin-константы. Старые данные не трогаются.
+         */
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS achievements (" +
+                        "id TEXT NOT NULL PRIMARY KEY, " +
+                        "unlockedAt INTEGER NOT NULL)"
+                )
             }
         }
     }

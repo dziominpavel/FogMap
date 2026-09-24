@@ -12,6 +12,56 @@
 
 ---
 
+## 2026-09-24 — add-achievements: apply + архивация (код + тесты, поле открыто)
+
+Что сделали:
+- Модель: Room `achievements` (id PK, unlockedAt), `MIGRATION_6_7` (v7), `AchievementDao` (INSERT IGNORE / getAll / isUnlocked / unlockedIds).
+- `achievement/Achievements.kt`: 45 определений (13 регионов × 10/50/100%, площадь 10/100/1000 км², серия 3/7/30), `AchievementChecker` — чистые `candidates`/`regionPercent`/`nextStreak`.
+- `AchievementRepository`: чтение counters → кандидаты → INSERT → SharedFlow `unlocked`; `bumpStreak` (streak_days / streak_last_day / streak_days_best).
+- Интеграция: `FogRepository.appendPoints` (после транзакции, при newBase>0), `TrackRepository.startDayChunk` (bumpStreak + check).
+- UI: `AchievementsScreen` (группы, дата/условие, Toast), route `"achievements"`, `AchievementsEntryCard` в Stats; `vision.md` — pivot зафиксирован.
+- Тесты: `AchievementCheckerTest` 11/11; `testDebugUnitTest` BUILD SUCCESSFUL.
+- tasks.md: 1.1–5.2 `[x]`, 5.3 (поле) открыта; подтверждение владельца на архивацию с 5.3.
+- Архивация: спека `achievements` синкнута в `openspec/specs/achievements/spec.md` (Purpose + 4 requirements, validate 14/14); change → `archive/2026-09-24-add-achievements`.
+
+Решения:
+- Только unlocked в БД, определения — код (design decision 1).
+- Синк спеков всегда перед архивацией (operation guidance, без отдельного вопроса).
+- Vision conflict: pivot фиксируется в vision.md в рамках change (proposal/spec requirement).
+
+Открытые вопросы:
+- 5.3 ручная проверка на устройстве (10% региона → ачивка + тост) — владельцу.
+- Так же открыто поле region-progress 4.3 (13 регионов, %).
+
+Версия: 1.6.0 → 1.7.0 (MINOR, achievements: 45 ачивок, триггеры, экран, toast; бамп при архивации change).
+
+---
+
+## 2026-09-24 — add-region-progress: apply (код + тесты, поле открыто)
+
+Что сделали:
+- Данные OSM: Overpass снимок 2026-09-24 (`temp_geo/regions_geom.json`, 13 relation admin_level=2/4/6); генератор `temp_geo/build_regions.js` (сборка outer-колец, Douglas-Peucker city 0.0004° / oblast 0.001° / republic 0.002°, inner отброшены — Минск попадает в minsk+minsk_oblast+belarus).
+- `region/Regions.kt`: 13 регионов, кольца как строки `"lon lat;…"` + `parseRings()` в `by lazy` — иначе `<clinit>` превышал лимит 64KB на метод JVM (`MethodTooLargeException`); площади Wikipedia (integer → `.0` для Double).
+- `region/RegionGeometry.kt`: bbox pre-filter + ray casting + `regionsAt` + `counterKey("region_<id>_cells")`.
+- `FogRepository`: блок инкремента counters в транзакции `confirmPending` после `insertChunked(fresh)`; companion `regionIncrements(cells)`.
+- `RegionProgressRepository` (progress/grouped по типам, сортировка desc %), `AppContainer.regionProgressRepository`.
+- UI: `RegionProgressScreen` (группы Города/Области/Республика, км² + %), route `"regions"`, вход из Stats (`RegionsEntryCard`).
+- Тесты: `RegionGeometryTest` 13/13; `./gradlew testDebugUnitTest` — 25 suites, 0 failures (`RegionGeometryTest` 13, `FogGridTest` 9, `TrustEngineTest` 28, …).
+- tasks.md: 1.1–4.2 закрыты; 4.3 (поле) открыта.
+- Архивация: спека `region-progress` синкнута в `openspec/specs/`; change → `archive/2026-09-24-add-region-progress` (12/13, предупреждение по 4.3 подтверждено владельцем).
+
+Решения:
+- Только outer-кольца (inner отброшены) — сценарий «пересечение регионов» spec; percent = (cells × AREA_PER_BASE_CELL_KM2) / totalAreaKm2 × 100.
+- Хранение: Kotlin-константы (не Room/assets) — design decision 2.
+
+Открытые вопросы:
+- 4.3 ручная проверка на устройстве (13 регионов, % после прогулки) — владельцу.
+- `temp_geo/` (8.78 МБ raw + генератор) untracked — в коммит не брать без команды (снимок OSM, не код).
+
+Версия: 1.5.2 → 1.6.0 (MINOR, region-progress: полигоны 13 регионов, counters, экран прогресса; бамп при архивации change).
+
+---
+
 ## 2026-09-23 — контракт стора «Мои приложения» + release-скрипт (change add-app-store)
 
 Что сделали:
