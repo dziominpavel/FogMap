@@ -4,22 +4,59 @@
 Карта — Яндекс MapKit Full 4.42.0. Сборка: `build-apk.bat` (релиз) / Gradle.
 Секреты: `local.properties` целиком НЕ открывать, только маскированные проверки.
 
-## Версии (обязательно, решение принимает агент)
+## Версии (обязательно)
 
-База версии — файл `version` (`MAJOR.MINOR.PATCH`). Полная версия и
-`versionCode` вычисляются из git в `app/build.gradle.kts` — там ничего не трогать.
-Полные правила и примеры: `docs/versioning.md`.
+База версии — файл `version` (`MAJOR.MINOR.PATCH`) = **последний выпущенный
+релиз APK**. Полная версия и `versionCode` вычисляются из git в
+`app/build.gradle.kts` — там ничего не трогать. Полные правила и примеры:
+`docs/versioning.md`.
 
-- **MAJOR** — ломающее (миграция с потерей, смена minSdk/схемы/карты, удаление фичи).
-- **MINOR** — новая фича/поведение (экран, режим трекинга, эко, импорт/экспорт, метрика).
-- **PATCH** — фикс без фич (краш, фильтр, UI-правка, производительность).
-- **NO_BUMP** — только доки/спеки/тесты/рефактор/CI, WIP внутри change — версию не трогать.
+- **В обычной сессии файл `version` НЕ трогать.** Пользовательские изменения
+  (код/поведение) копятся в секцию `## [Unreleased]` в `CHANGELOG.md`;
+  чистые доки/спеки/тесты/рефактор — в `CHANGELOG` ничего не писать.
+- **Бамп — только в момент релиза APK** (`build-apk.bat release`): классифицировать
+  всё из `[Unreleased]` (MAJOR — ломающее, MINOR — новая фича, PATCH — только фиксы),
+  записать новую базу в `version`, свернуть `[Unreleased]` в версионную секцию,
+  `python scripts/check-version.py` → коммит с упоминанием версии.
+- Строка `Версия:` в `docs/sessions.md` — обязательна всегда:
+  `без бампа (в Unreleased; бамп на релизе)` либо `x.y.z → x.y.z (УРОВЕНЬ)`,
+  если сессия и есть релиз.
 
-Процедура: в начале сессии прочитать `version` + верх `CHANGELOG.md`;
-в конце сессии / перед коммитом / при архивации change — `git status` +
-`git diff --stat`, классифицировать, максимум один бамп за сессию.
-Бамп = `version` + секция в `CHANGELOG.md` + строка `Версия:` в `docs/sessions.md` +
-упоминание в сообщении коммита. Проверка: `python scripts/check-version.py`.
+## Инструменты и типичные грабли (проверено на этой машине)
+
+**JDK/Gradle.** Системный `java` — 25.0.2, Kotlin DSL Gradle на нём падает
+с `IllegalArgumentException: 25.0.2`. Перед ЛЮБОЙ gradle-командой выставить:
+
+```powershell
+$env:JAVA_HOME = "C:\Users\Dziom\.gradle\jdks\eclipse_adoptium-17-amd64-windows.2"
+```
+
+Резервные кандидаты (тот же список, что в `build-apk.bat`):
+`C:\Program Files\Java\jdk-17`, `C:\Program Files\Java\jdk-17.0.7`.
+Флаг `-Dorg.gradle.java.home=...` НЕ работает (старый daemon уже на 25) —
+менять только `JAVA_HOME`. `build-apk.bat` ставит JDK сам.
+
+**Команды Gradle** (все с `$env:JAVA_HOME` выше):
+- компиляция: `.\gradlew.bat :app:compileDebugKotlin`
+- unit-тесты: `.\gradlew.bat :app:testDebugUnitTest`
+- instrumented: `.\gradlew.bat :app:connectedDebugAndroidTest` — нужен эмулятор:
+  `& "$env:LOCALAPPDATA\Android\Sdk\emulator\emulator.exe" -avd fogmap-test -no-window -no-audio -gpu swiftshader_indirect`
+  (запускать фоном), затем `adb wait-for-device` и ожидание
+  `adb shell getprop sys.boot_completed == 1`; в конце — `adb emu kill`.
+- сборка/релиз APK: `build-apk.bat [debug|install|release]` (JDK ставит сам).
+
+**Кодировка.** `CHANGELOG.md`, `docs/*.md`, `AGENTS.md`, спеки — UTF-8:
+читать инструментами `read`/`grep`, НЕ `Get-Content`/`type` (в выводе кракозябры,
+из-за них уже ловили ложные несовпадения). `git status`/`git diff` кодируют сами.
+
+**PowerShell.** Код возврата — `$LASTEXITCODE` (`$?` врёт для native-команд);
+`2>&1` на stderr gradle/python приходит как `NativeCommandError` — это не падение
+команды, смотреть на код возврата/итоговый `BUILD SUCCESSFUL`. Проверка версий:
+`python scripts/check-version.py` → ожидается `exit=0`.
+
+**Личные данные.** `dist/` (полевые логи `fog-*.jsonl`, `track-debug_*`, скриншоты,
+APK) под `.gitignore` — в `git status` их быть не должно. Секреты:
+`local.properties` целиком НЕ открывать, только маскированные проверки.
 
 ## Git (обязательно для всех моделей ИИ, без исключений)
 

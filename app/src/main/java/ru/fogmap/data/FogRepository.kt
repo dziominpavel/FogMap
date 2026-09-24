@@ -51,7 +51,12 @@ class FogRepository(
     private val achievements: AchievementRepository? = null
 ) {
 
-    data class BatchResult(val newCells: Int, val distanceM: Double)
+    /**
+     * @param trackId фактическая строка дня, в которую легли точки: совпадает с
+     * аргументом, кроме случая протухшего id (см. [appendPoints]) — вызывающий
+     * обновляет свой кэш по этому полю.
+     */
+    data class BatchResult(val newCells: Int, val distanceM: Double, val trackId: Long)
 
     suspend fun appendPoints(
         trackId: Long,
@@ -59,17 +64,28 @@ class FogRepository(
         date: LocalDate = LocalDate.now(),
         wakeAnchor: RawPoint? = null
     ): BatchResult {
-        if (points.isEmpty()) return BatchResult(0, 0.0)
+        if (points.isEmpty()) return BatchResult(0, 0.0, trackId)
         var newBase = 0
         var distance = 0.0
+        var resolvedTrackId = trackId
         db.withTransaction {
-            // 0. План батча (fix-import-metrics 1.3): дистанция — ТОЛЬКО от
+            // 0. Защита от протухшего id (fix-stale-track-id 24.09): импорт/rebuild
+            // (track-debug) или удаление трека пересоздают строку дня, пока сервис
+            // держит старый trackId в поле — без проверки точки стали бы сиротами
+            // (вечерние маршруты 24.09 пропали из истории при живом raw). Проверка
+            // ВНУТРИ этой транзакции закрывает гонку с многосекундным rebuild-ом:
+            // write-лок SQLite сериализует её с импортом.
+            if (db.trackDao().trackById(trackId) == null) {
+                resolvedTrackId = TrackRepository(db).openDayChunk(date)
+            }
+            val tid = resolvedTrackId
+            // 0б. План батча (fix-import-metrics 1.3): дистанция — ТОЛЬКО от
             // последней записанной точки дня; якорь пробуждения (wake-balance
             // 2.2) — инструмент коридора тумана. Его хорда «якорь -> первая
             // точка» в дистанцию не входит (21.09: 19.59 км против 11.24 км
             // по сохранённым точкам).
             val plan = planBatch(
-                dayTail = db.trackDao().lastPoint(trackId)?.toRaw(),
+                dayTail = db.trackDao().lastPoint(tid)?.toRaw(),
                 wakeAnchor = wakeAnchor
             )
             // 1. Точки в БД пачкой — сырые, с полным вердиктом (ворота разделены:
@@ -77,7 +93,7 @@ class FogRepository(
             // (откроются подтверждением ниже), вердиктные вето — 2 (навсегда).
             db.trackDao().insertPoints(points.map {
                 TrackPointEntity(
-                    trackId = trackId, time = it.time, lat = it.lat,
+                    trackId = tid, time = it.time, lat = it.lat,
                     lon = it.lon, acc = it.acc, speed = it.speed, trust = it.trust,
                     state = it.state, rejectReason = it.rejectReason,
                     fogOpened = if (it.openFog) 0 else 2
@@ -86,14 +102,14 @@ class FogRepository(
             // 2. Ворота C: разбираем хвост ожидания (старые pending + свежий
             // батч) — подтвержденные открывают туман, заветированные закрыты.
             // Последние LAG точек всегда остаются ждать будущего.
-            newBase = confirmPending(trackId, points, plan.corridorAnchor)
+            newBase = confirmPending(resolvedTrackId, points, plan.corridorAnchor)
             // 3. Дистанция/время — только MOVING (fix-walk-fog-verdict 4.2):
             // STAND-строки не накручивают км/мин.
             val moving = points.filter { it.state == "MOVING" }
             val distTail = plan.distanceTail?.takeIf { it.state == "MOVING" }
             distance = batchDistance(moving, distTail)
             // 3б. Честная статистика трека — в той же транзакции (баг вечных 0 км).
-            db.trackDao().addStats(trackId, distance, points.size, points.last().time)
+            db.trackDao().addStats(tid, distance, points.size, points.last().time)
             // 4. Счетчики (материализованные, ЧП-5): дистанция/время — только
             // движение, площадь — только по подтвержденным (шаг 2).
             val counters = db.counterDao()
@@ -110,7 +126,7 @@ class FogRepository(
         // Ачивки (add-achievements 2.5): после коммита транзакции — триггеры
         // по % регионов и суммарной площади; тост по событию unlocked.
         if (newBase > 0) achievements?.checkAndUnlock()
-        return BatchResult(newBase, distance)
+        return BatchResult(newBase, distance, resolvedTrackId)
     }
 
     /**

@@ -7,6 +7,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -111,6 +112,64 @@ class DatabaseTest {
         val empty = db.trackDao().trackById(idB)!!
         assertEquals(0, empty.pointsCount)
         assertEquals(0.0, empty.distanceM, 1e-9)
+    }
+
+    /**
+     * Протухший trackId (fix-stale-track-id 24.09): импорт/rebuild пересоздаёт
+     * строку дня, пока TrackingService держит старый id в поле. Без защиты точки
+     * после импорта писались бы с несуществующим id — сироты, невидимые в
+     * истории/экспорте (вечерние маршруты 24.09 пропали при живом raw).
+     * appendPoints обязан внутри своей транзакции переоткрыть день и вернуть
+     * фактический id в BatchResult.
+     */
+    @Test
+    fun appendPointsRecoversStaleTrackIdAfterRebuild() = runTest {
+        val repo = TrackRepository(db)
+        val date = java.time.LocalDate.of(2026, 9, 24)
+        val oldId = repo.openDayChunk(date)
+        // Метки времени обязаны попадать в сутки даты (системная зона), иначе
+        // latestInRange не найдет пересозданную строку и откроется лишний день.
+        val zone = java.time.ZoneId.systemDefault()
+        val t0 = date.atTime(18, 10).atZone(zone).toInstant().toEpochMilli()
+        // Импорт бэкапа: clearTracks + rebuild — строка дня уходит, создаётся новая.
+        val day = "2026-09-24"
+        val zip = TrackDebugExport.buildZip(
+            TrackDebugExport.Input(
+                day, day,
+                mapOf(
+                    day to listOf(
+                        RawFixEntity(
+                            day = day, time = t0, lat = 55.75, lon = 37.61,
+                            acc = 5f, speed = 1f, isMock = false, filter = "ok",
+                            state = null, trust = null, openFog = null,
+                            rejectReason = null, implied = null, cap = null,
+                            teleport = null
+                        )
+                    )
+                ),
+                emptyList(), emptyMap(), "test"
+            )
+        )
+        TrackDebugImport.importAndRebuild(db, zip)
+        assertNull(db.trackDao().trackById(oldId))
+
+        val res = fog.appendPoints(
+            oldId,
+            listOf(RawPoint(time = t0 + 9000, lat = 55.7509, lon = 37.61, acc = 5f, speed = 1f)),
+            date = date
+        )
+        // Точки легли в пересозданную строку дня, а не в сироту.
+        assertTrue("старый id должен смениться", res.trackId != oldId)
+        assertTrue(db.trackDao().pointsOf(res.trackId).size >= 1)
+        assertEquals(0, db.trackDao().pointsOf(oldId).size)
+        // Повторный вызов с уже актуальным id — без лишних пересозданий.
+        val again = fog.appendPoints(
+            res.trackId,
+            listOf(RawPoint(time = t0 + 17000, lat = 55.7519, lon = 37.61, acc = 5f, speed = 1f)),
+            date = date
+        )
+        assertEquals(res.trackId, again.trackId)
+        assertEquals(1, db.trackDao().allTracks().size)
     }
 
     /**

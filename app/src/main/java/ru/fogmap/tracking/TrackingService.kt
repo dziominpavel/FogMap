@@ -463,6 +463,17 @@ class TrackingService : LifecycleService() {
                 trackId = container.trackRepository.openDayChunk(today)
                 chunkDate = today
                 runCatching { container.fogRepository.recordBranches(emptyMap(), today) }
+            } else if (container.db.trackDao().trackById(trackId) == null) {
+                // Строка дня исчезла (fix-stale-track-id 24.09): импорт/rebuild
+                // track-debug или удаление трека пересоздали её с новым id, а
+                // сервис кэширует trackId в поле и без перезапуска не перечитывает —
+                // точки после импорта ушли бы в сироты (вечерние маршруты 24.09
+                // пропали из истории при живом raw). Переоткрываем день.
+                trackId = container.trackRepository.openDayChunk(today)
+                DevLog.w(
+                    "TRACK", "day_chunk_recovered",
+                    mapOf("track_id" to trackId, "cause" to "row_missing")
+                )
             }
         }
         // BURST-таймаут без новых фиксов (battery-eco 2.3): тихий возврат в сон.
@@ -564,8 +575,18 @@ class TrackingService : LifecycleService() {
                         openFog = true, state = "STAND", rejectReason = null
                     )
                 } else null
-                newCells = container.fogRepository
-                    .appendPoints(trackId, batch, wakeAnchor = wakeAnchorPoint).newCells
+                val appended = container.fogRepository
+                    .appendPoints(trackId, batch, wakeAnchor = wakeAnchorPoint)
+                newCells = appended.newCells
+                // Страховка той же защиты внутри appendPoints (гонка с rebuild):
+                // подтягиваем фактический id, чтобы next flush читал хвост дня.
+                if (appended.trackId != trackId) {
+                    trackId = appended.trackId
+                    DevLog.w(
+                        "TRACK", "day_chunk_recovered",
+                        mapOf("track_id" to trackId, "cause" to "stale_id")
+                    )
+                }
                 // Префикс спрямления (battery-eco 3): якорь STANDBY -> first.
                 // В бюджет префикса идет ТОЛЬКО пробуждение от якоря; разрыв
                 // prev->first после тишины — отдельная метрика (fix-eco-signal-loss 4.1).
