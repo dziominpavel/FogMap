@@ -30,3 +30,9 @@ dist/
 dist/fog-*.jsonl
 dist/photo_*
 dist/track-debug_*
+
+# region-gen: мусор генерации регионов (логи/промежуточные выгрузки)
+region-gen/gradle-*
+region-gen/page.html
+region-gen/by.json
+region-gen/regions.json

@@ -1,0 +1,8 @@
+[out:json][timeout:120];
+area["ISO3166-1"="BY"][admin_level=2]->.by;
+(
+  relation["admin_level"="4"](area.by);
+  relation["admin_level"="6"]["boundary"="administrative"](area.by);
+  relation["admin_level"="8"]["boundary"="administrative"](area.by);
+);
+out tags geom;

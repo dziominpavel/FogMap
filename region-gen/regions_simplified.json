@@ -1,0 +1,212 @@
+[
+  {
+    "id": "belarus",
+    "name": "Беларусь",
+    "type": "republic",
+    "area": 207600,
+    "bbox": {
+      "minLon": 23.1786854,
+      "minLat": 51.2626864,
+      "maxLon": 32.7627809,
+      "maxLat": 56.172204
+    },
+    "ringCounts": [
+      2835
+    ]
+  },
+  {
+    "id": "gomel_oblast",
+    "name": "Гомельская область",
+    "type": "oblast",
+    "area": 33469,
+    "bbox": {
+      "minLon": 27.2502556,
+      "minLat": 51.2626864,
+      "maxLon": 31.7992518,
+      "maxLat": 53.3549444
+    },
+    "ringCounts": [
+      1815
+    ]
+  },
+  {
+    "id": "mogilev_oblast",
+    "name": "Могилёвская область",
+    "type": "oblast",
+    "area": 29068,
+    "bbox": {
+      "minLon": 28.081725,
+      "minLat": 52.6745741,
+      "maxLon": 32.7627809,
+      "maxLat": 54.4742664
+    },
+    "ringCounts": [
+      2173
+    ]
+  },
+  {
+    "id": "brest_oblast",
+    "name": "Брестская область",
+    "type": "oblast",
+    "area": 32787,
+    "bbox": {
+      "minLon": 23.1786854,
+      "minLat": 51.4989171,
+      "maxLon": 27.6160777,
+      "maxLat": 53.4079308
+    },
+    "ringCounts": [
+      1559
+    ]
+  },
+  {
+    "id": "minsk",
+    "name": "Минск",
+    "type": "city",
+    "area": 348.84,
+    "bbox": {
+      "minLon": 27.3740176,
+      "minLat": 53.793847,
+      "maxLon": 28.0799469,
+      "maxLat": 53.9717897
+    },
+    "ringCounts": [
+      362,
+      37,
+      36
+    ]
+  },
+  {
+    "id": "grodno_oblast",
+    "name": "Гродненская область",
+    "type": "oblast",
+    "area": 25127,
+    "bbox": {
+      "minLon": 23.511654,
+      "minLat": 52.74407,
+      "maxLon": 26.7012075,
+      "maxLat": 54.9980874
+    },
+    "ringCounts": [
+      1888
+    ]
+  },
+  {
+    "id": "vitebsk_oblast",
+    "name": "Витебская область",
+    "type": "oblast",
+    "area": 40051,
+    "bbox": {
+      "minLon": 26.2084865,
+      "minLat": 54.2344468,
+      "maxLon": 31.2107558,
+      "maxLat": 56.1722446
+    },
+    "ringCounts": [
+      2448
+    ]
+  },
+  {
+    "id": "minsk_oblast",
+    "name": "Минская область",
+    "type": "oblast",
+    "area": 39846,
+    "bbox": {
+      "minLon": 26.0031581,
+      "minLat": 52.3897856,
+      "maxLon": 29.4929043,
+      "maxLat": 55.02219
+    },
+    "ringCounts": [
+      2111,
+      20,
+      15,
+      15,
+      8,
+      5,
+      5
+    ]
+  },
+  {
+    "id": "mogilev",
+    "name": "Могилёв",
+    "type": "city",
+    "area": 118.5,
+    "bbox": {
+      "minLon": 30.2259627,
+      "minLat": 53.7930968,
+      "maxLon": 30.4738304,
+      "maxLat": 53.9705194
+    },
+    "ringCounts": [
+      202,
+      34
+    ]
+  },
+  {
+    "id": "brest",
+    "name": "Брест",
+    "type": "city",
+    "area": 146.1,
+    "bbox": {
+      "minLon": 23.565437,
+      "minLat": 52.023784,
+      "maxLon": 23.8543868,
+      "maxLat": 52.1510404
+    },
+    "ringCounts": [
+      149
+    ]
+  },
+  {
+    "id": "grodno",
+    "name": "Гродно",
+    "type": "city",
+    "area": 142.1,
+    "bbox": {
+      "minLon": 23.7094451,
+      "minLat": 53.5990636,
+      "maxLon": 23.9836193,
+      "maxLat": 53.7597785
+    },
+    "ringCounts": [
+      202,
+      37
+    ]
+  },
+  {
+    "id": "gomel",
+    "name": "Гомель",
+    "type": "city",
+    "area": 160.4,
+    "bbox": {
+      "minLon": 30.7469505,
+      "minLat": 52.3434547,
+      "maxLon": 31.1715281,
+      "maxLat": 52.5707879
+    },
+    "ringCounts": [
+      326,
+      23,
+      16,
+      8,
+      7
+    ]
+  },
+  {
+    "id": "vitebsk",
+    "name": "Витебск",
+    "type": "city",
+    "area": 134.6,
+    "bbox": {
+      "minLon": 30.0767868,
+      "minLat": 55.130321,
+      "maxLon": 30.3219785,
+      "maxLat": 55.3150949
+    },
+    "ringCounts": [
+      243,
+      54
+    ]
+  }
+]
