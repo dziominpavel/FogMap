@@ -19,9 +19,9 @@ import ru.fogmap.data.FogRepository
 object PendingGate {
     /**
      * Лаг подтверждения, доставки (~20–30 сек тумана позади реальности).
-     * Окно хвоста TAIL_LIMIT покрывает максимальный живой батч (FLUSH_SIZE)
-     * плюс перенос: иначе чанки rebuild сиротили pending (track-fix 19.09:
-     * 214 висячих точек) — adjudication видит весь хвост целиком.
+     * Последние [LAG] точек ждут будущего, НО точка из этого хвоста старше
+     * [MAX_PENDING_AGE_S] относительно новейшей точки входит в разбор и без
+     * будущих доставок (дренаж по wall-clock) — ничего не висит вечно.
      */
     const val LAG = 2
     /** Ближе якоря — не вылет, вето не применяется. */
@@ -33,11 +33,6 @@ object PendingGate {
      * по возрасту.
      */
     const val MAX_PENDING_AGE_S = 600L
-    /**
-     * Окно хвоста из БД: с запасом покрывает FLUSH_SIZE + перенос лага,
-     * иначе крупные батчи (rebuild-чанки) сиротили бы pending вечно.
-     */
-    const val TAIL_LIMIT = 32
 
     data class Item(
         val id: Long,
@@ -69,13 +64,25 @@ object PendingGate {
         val confirmed = ArrayList<Item>()
         val vetoed = ArrayList<Item>()
         val reasons = HashMap<Long, String>()
-        // Хвост очереди ждет будущего и в этом вызове не трогается.
-        val actionable = if (pendingAsc.size > LAG) pendingAsc.dropLast(LAG) else emptyList()
+        // Хвост очереди ждет будущего и в этом вызове не трогается — но
+        // протухшая по wall-clock точка (старше MAX_PENDING_AGE_S от новейшей)
+        // входит в разбор даже из последних LAG позиций: иначе хвост висит
+        // вечно, когда новых доставок больше нет (2 точки 19:10 25.09).
+        val actionable = pendingAsc.filterIndexed { i, c ->
+            i < pendingAsc.size - LAG ||
+                (newest.time - c.time) / 1000 > MAX_PENDING_AGE_S
+        }
         var anch = anchor
         for (c in actionable) {
             val out = anch?.let { FogRepository.haversineM(it.lat, it.lon, c.lat, c.lon) } ?: 0.0
             val back = anch?.let { FogRepository.haversineM(it.lat, it.lon, newest.lat, newest.lon) } ?: 0.0
+            // Временная монотонность (fix-pending-gate-false-vetoes D1):
+            // «туда-обратно» имеет смысл только когда кандидат НОВЕЕ якоря —
+            // иначе морозка превращает маршрут в ложный круговой вылет против
+            // более нового якоря (49 вето 25.09). Якорь продвигается только
+            // вперед по времени.
             val roundTrip = anch != null &&
+                c.time > anch.time &&
                 out > VETO_MIN_DIST_M &&
                 back < TrustEngine.RETURN_RATIO * out
             // Протухание — только для не-MOVING (fix-eco-signal-loss 2.1):
@@ -87,7 +94,7 @@ object PendingGate {
                 reasons[c.id] = if (stale) FogRepository.VETO_STALE else FogRepository.VETO_RETURN
             } else {
                 confirmed.add(c)
-                anch = c
+                if (anch == null || c.time > anch.time) anch = c
             }
         }
         return Result(confirmed, vetoed, reasons)

@@ -158,14 +158,17 @@ interface TrackDao {
     suspend fun deleteTracks(ids: List<Long>)
 
     /**
-     * Хвост ожидания ворот C (trust-v2 2.1): последние неоткрытые точки трека.
-     * Нужен после убийства процесса (догоняющее открытие) и для вето.
+     * Хвост ожидания ворот C (trust-v2 2.1): все неоткрытые точки трека,
+     * newest-first. Нужен после убийства процесса (догоняющее открытие) и
+     * для вето. Без LIMIT (fix-pending-gate-false-vetoes D2): окно обязано
+     * видеть хвост целиком, иначе батч морозки сиротит старые pending —
+     * фиксированный лимит и есть класс бага.
      */
     @Query(
         "SELECT * FROM track_points WHERE trackId = :trackId AND fogOpened = 0 " +
-            "ORDER BY time DESC, id DESC LIMIT :limit"
+            "ORDER BY time DESC, id DESC"
     )
-    suspend fun unopenedTail(trackId: Long, limit: Int): List<TrackPointEntity>
+    suspend fun unopenedTail(trackId: Long): List<TrackPointEntity>
 
     @Query("UPDATE track_points SET fogOpened = 1 WHERE id IN (:ids)")
     suspend fun markOpened(ids: List<Long>)
@@ -181,6 +184,25 @@ interface TrackDao {
      */
     @Query("UPDATE track_points SET fogOpened = 2, rejectReason = :reason WHERE id IN (:ids)")
     suspend fun markClosedWithReason(ids: List<Long>, reason: String)
+
+    /**
+     * Переоткрытие (repair-проход fix-pending-gate-false-vetoes): снимает
+     * вето И его причину — иначе в выгрузке/аудите у открытой точки остался
+     * бы `veto_return`.
+     */
+    @Query("UPDATE track_points SET fogOpened = 1, rejectReason = NULL WHERE id IN (:ids)")
+    suspend fun markReopened(ids: List<Long>)
+
+    /** Ремонт ворот C: треки с точками, закрытыми `veto_return`. */
+    @Query(
+        "SELECT DISTINCT trackId FROM track_points " +
+            "WHERE fogOpened = 2 AND rejectReason = 'veto_return'"
+    )
+    suspend fun tracksWithVetoReturn(): List<Long>
+
+    /** Ремонт ворот C: треки с неоткрытыми точками (застрявший хвост). */
+    @Query("SELECT DISTINCT trackId FROM track_points WHERE fogOpened = 0")
+    suspend fun tracksWithUnopened(): List<Long>
 
     /**
      * Последняя открытая точка трека — якорь коридоров и вето (ворота C).

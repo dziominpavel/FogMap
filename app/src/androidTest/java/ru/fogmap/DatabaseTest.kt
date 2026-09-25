@@ -175,7 +175,8 @@ class DatabaseTest {
     /**
      * Rebuild большого дня (track-fix 19.09): 40 точек линией обязаны открыть
      * туман вдоль всей линии. Одним батчем ворота C видели только хвост
-     * TAIL_LIMIT=16 — остальное висело в ожидании вечно (вайп прогресса).
+     * лимитного окна — остальное висело в ожидании вечно (вайп прогресса);
+     * окно хвоста сейчас без лимита (fix-pending-gate-false-vetoes D2).
      * Границы дня — из данных (иначе 0 мин).
      */
     @Test
@@ -204,7 +205,7 @@ class DatabaseTest {
         assertEquals(pts.size, t.pointsCount)
         assertTrue("точек ${pts.size}", pts.size >= 38)
         // Хвост ожидания — не больше лага ворот, остальное подтверждено.
-        val tail = db.trackDao().unopenedTail(t.id, 1000)
+        val tail = db.trackDao().unopenedTail(t.id)
         assertTrue("хвост ${tail.size}", tail.size <= PendingGate.LAG)
         // Туман вдоль всей линии (~4.3 км), а не у последних 16 точек.
         assertTrue(db.fogDao().cellCount() > 500)

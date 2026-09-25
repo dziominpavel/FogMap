@@ -97,4 +97,75 @@ class PendingGateTest {
         assertEquals(listOf(10L), res.vetoed.map { it.id })
         assertTrue(res.confirmed.isEmpty())
     }
+
+    // --- fix-pending-gate-false-vetoes (D1/D4) ---
+
+    @Test
+    fun `инверсия времени — круговой вылет геометрии не ветуется`() {
+        // Морозка 25.09: якорь — новая точка «дом», старые pending-точки
+        // маршрута старше якоря. out ~4 км, back ~0 — при старой логике
+        // 49 маршрутов ушло в veto_return. Кандидат старше якоря → вето нет.
+        // Хвост из 4 точек: разбираются первые две (последние LAG ждут).
+        val home = pt(-1, 53.9, 1_000_000L)
+        val route = pt(10, 53.9 + 0.036, 100_000L, state = "MOVING")
+        val nearHome = pt(11, 53.9 + 0.0001, 150_000L, state = "MOVING")
+        val n1 = pt(12, 53.9 + 0.0002, 160_000L, state = "MOVING")
+        val n2 = pt(13, 53.9 + 0.0003, 170_000L, state = "MOVING")
+        val res = PendingGate.adjudicate(listOf(route, nearHome, n1, n2), home, n2)
+        assertTrue("инверсия не должна ветовать: ${res.vetoedReasons}", res.vetoed.isEmpty())
+        assertEquals(listOf(10L, 11L), res.confirmed.map { it.id })
+    }
+
+    @Test
+    fun `якорь не откатывается назад после старого кандидата`() {
+        // Якорь новее всех кандидатов. Если бы якорь откатился к первой
+        // подтвержденной старой точке A, следующая точка B (в 444 м от A,
+        // а новейшая точка хвоста рядом с A) получила бы ложный roundTrip-veto.
+        val home = pt(-1, 53.9, 1_000_000L)
+        val a = pt(10, 53.9 + 0.036, 100_000L, state = "MOVING")
+        val b = pt(11, 53.9 + 0.040, 150_000L, state = "MOVING")
+        val n1 = pt(12, 53.9 + 0.0361, 160_000L, state = "MOVING")
+        val n2 = pt(13, 53.9 + 0.0362, 170_000L, state = "MOVING")
+        val res = PendingGate.adjudicate(listOf(a, b, n1, n2), home, n2)
+        assertTrue("откат якоря дал бы ложное вето: ${res.vetoedReasons}", res.vetoed.isEmpty())
+        assertEquals(listOf(10L, 11L), res.confirmed.map { it.id })
+    }
+
+    @Test
+    fun `LAG-точка старше лимита дренируется и получает вето`() {
+        // Единственная pending-точка (хвост целиком в LAG) без будущих
+        // доставок: раньше actionable был пуст и точка висела вечно.
+        val o = pt(-1, 53.9, -8000L)
+        val stuck = pt(10, 53.9 + 0.0001, 0L, state = "STAND")
+        val newest = pt(11, 53.9 + 0.0001, 700_000L, state = "STAND") // 700 с > 600
+        val res = PendingGate.adjudicate(listOf(stuck, newest), o, newest)
+        assertEquals(listOf(10L), res.vetoed.map { it.id })
+        assertEquals(
+            ru.fogmap.data.FogRepository.VETO_STALE,
+            res.vetoedReasons[10L]
+        )
+    }
+
+    @Test
+    fun `LAG-движение старше лимита дренируется и подтверждается`() {
+        // Те же 2 точки 19:10 25.09: движение после обрыва доставки
+        // подтверждается, а не ветуется по возрасту.
+        val o = pt(-1, 53.9, -8000L)
+        val stuck = pt(10, 53.9 + 0.003, 0L, state = "MOVING")
+        val newest = pt(11, 53.9 + 0.0031, 700_000L, state = "MOVING")
+        val res = PendingGate.adjudicate(listOf(stuck, newest), o, newest)
+        assertTrue(res.vetoed.isEmpty())
+        assertEquals(listOf(10L), res.confirmed.map { it.id })
+    }
+
+    @Test
+    fun `свежий LAG-хвост по-прежнему ждет будущего`() {
+        // Дренаж не ломает лаг: точке меньше MAX_PENDING_AGE_S из последних
+        // LAG позиций по-прежнему ждать.
+        val o = pt(-1, 53.9, -8000L)
+        val young = pt(10, 53.9 + 0.003, 1_000_000L, state = "MOVING")
+        val newest = pt(11, 53.9 + 0.0031, 1_008_000L, state = "MOVING")
+        val res = PendingGate.adjudicate(listOf(young, newest), o, newest)
+        assertTrue(res.confirmed.isEmpty() && res.vetoed.isEmpty())
+    }
 }

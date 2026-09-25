@@ -38,6 +38,23 @@ data class RawPoint(
     val rejectReason: String? = null
 )
 
+/**
+ * План ремонта одного трека (fix-pending-gate-false-vetoes E): что переоткрыть
+ * ([confirm]), кого чем закрыть заново ([veto]: id точки → причина REJECT_*).
+ * Чистые данные — план считается без БД, применяется в транзакции.
+ */
+data class RepairPlan(
+    val confirm: List<TrackPointEntity>,
+    val veto: Map<Long, String>
+)
+
+/** Итог ремонтного прохода для DevLog/аудита. */
+data class RepairSummary(
+    val tracks: Int,
+    val points: Int,
+    val cells: Int
+)
+
 /** Хвост прошлого батча как RawPoint для честной дистанции (trust учитывается). */
 internal fun TrackPointEntity.toRaw() =
     RawPoint(time, lat, lon, acc, speed, trust, openFog = fogOpened == 1, state, rejectReason)
@@ -138,7 +155,7 @@ class FogRepository(
     private suspend fun confirmPending(
         trackId: Long, batch: List<RawPoint>, wakeAnchor: RawPoint? = null
     ): Int {
-        val tail = db.trackDao().unopenedTail(trackId, PendingGate.TAIL_LIMIT)
+        val tail = db.trackDao().unopenedTail(trackId)
         if (tail.isEmpty()) return 0
         val anchorEnt = db.trackDao().lastOpenedPoint(trackId)
         // Якорь пробуждения — запасной якорь коридора, пока туман дня еще
@@ -166,7 +183,12 @@ class FogRepository(
         val byId = tail.associateBy { it.id }
         val confirmedRaw = res.confirmed.mapNotNull { byId[it.id]?.toRaw() }
             .map { it.copy(openFog = true) }
-        val open = openBaseCells(confirmedRaw, anchorRaw)
+        // Линк якорь→первая только при порядке времени (fix-pending-gate-
+        // false-vetoes D3): при инверсии (точка старше якоря) прямая линия
+        // прошла бы сквозь непосещенную местность — рисуем только кисти и
+        // коридоры между последовательными парами самих точек.
+        val linkAnchor = linkAnchorFor(anchorRaw, confirmedRaw)
+        val open = openBaseCells(confirmedRaw, linkAnchor)
         val fresh = filterCovered(open, fetchAncestors(open))
         val n = insertChunked(fresh)
         // Региональные счетчики (add-region-progress 2.1): в той же транзакции,
@@ -180,6 +202,81 @@ class FogRepository(
         promoteCascade(fresh)
         db.trackDao().markOpened(res.confirmed.map { it.id })
         return n
+    }
+
+    /**
+     * Разовый ремонт после ложных вето (fix-pending-gate-false-vetoes E/D5):
+     * проход по трекам с `veto_return` и застрявшим `fogOpened=0`, план
+     * считается чистой функцией [planRepair] (та же логика ворот C, что и
+     * живой flush), применяется в транзакции на трек.
+     *
+     * Идемпотентность: флаг [REPAIR_FLAG] в `counters` пишется ПОСЛЕ прохода;
+     * повторный запуск с флагом возвращает null и ничего не трогает. Проход
+     * без пораженных строк тоже закрывается флагом (спека: не чаще раза).
+     * Гонка с живым flush безвредна: план читается внутри транзакции, а если
+     * flush уже разобрал хвост — план пуст.
+     *
+     * @return итог для DevLog или null, если ремонт уже выполнялся.
+     */
+    suspend fun repairVetoed(): RepairSummary? {
+        if (db.counterDao().get(REPAIR_FLAG) != null) return null
+        val ids = (db.trackDao().tracksWithVetoReturn() + db.trackDao().tracksWithUnopened())
+            .distinct()
+        var nTracks = 0
+        var nPoints = 0
+        var nCells = 0
+        for (tid in ids) {
+            var repaired = 0
+            var opened = 0
+            db.withTransaction {
+                val plan = planRepair(db.trackDao().pointsOf(tid))
+                repaired = plan.confirm.size + plan.veto.size
+                if (plan.veto.isNotEmpty()) {
+                    // Честные вето: та же причина той же точке = no-op (аудит не меняется).
+                    for ((reason, group) in plan.veto.entries.groupBy({ it.value }, { it.key })) {
+                        db.trackDao().markClosedWithReason(group, reason)
+                    }
+                }
+                if (plan.confirm.isNotEmpty()) {
+                    val confirmedRaw = plan.confirm.map { it.toRaw().copy(openFog = true) }
+                    // Линк по D3 — только при порядке времени; инверсия
+                    // (ремонт точек старше открытого якоря) рисует кисти
+                    // и коридоры вдоль самих точек, без прямых через город.
+                    val linkAnchor =
+                        linkAnchorFor(db.trackDao().lastOpenedPoint(tid)?.toRaw(), confirmedRaw)
+                    val open = openBaseCells(confirmedRaw, linkAnchor)
+                    val fresh = filterCovered(open, fetchAncestors(open))
+                    opened = insertChunked(fresh)
+                    if (opened > 0) {
+                        // Площадь — по дню трека (клетки посещены в тот день,
+                        // а не в день ремонта). Дистанция/время не считаем:
+                        // точки уже в статистике, меняется только туман.
+                        val track = db.trackDao().trackById(tid)
+                        val date = java.time.Instant.ofEpochMilli(track?.startedAt ?: 0L)
+                            .atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+                        val counters = db.counterDao()
+                        for (suffix in rangeSuffixesFor(date)) {
+                            counters.addOrInsert("area_cells_$suffix", opened.toLong())
+                        }
+                        for ((regionId, delta) in regionIncrements(fresh)) {
+                            counters.addOrInsert(RegionGeometry.counterKey(regionId), delta)
+                        }
+                    }
+                    promoteCascade(fresh)
+                    // markReopened: вместе с вето снимается и его причина —
+                    // у открытой точки не должно остаться rejectReason.
+                    db.trackDao().markReopened(plan.confirm.map { it.id })
+                }
+            }
+            if (repaired > 0) {
+                nTracks++
+                nPoints += repaired
+                nCells += opened
+            }
+        }
+        db.withTransaction { db.counterDao().set(CounterEntity(REPAIR_FLAG, 1)) }
+        if (nCells > 0) achievements?.checkAndUnlock()
+        return RepairSummary(nTracks, nPoints, nCells)
     }
 
     /**
@@ -356,6 +453,11 @@ class FogRepository(
          */
         const val VETO_RETURN = "veto_return"
         const val VETO_STALE = "veto_stale"
+        /**
+         * Флаг-маркер разового ремонта (fix-pending-gate-false-vetoes E/D5)
+         * в `counters`: пишется после успешного прохода [repairVetoed].
+         */
+        const val REPAIR_FLAG = "pending_gate_repair_v1"
         val REJECT_REASONS = listOf(
             REJECT_ACCURACY, REJECT_SPEED, REJECT_MOCK, REJECT_PAUSED, REJECT_NO_FIX,
             REJECT_JUMP
@@ -399,6 +501,86 @@ class FogRepository(
             val week = date.get(WeekFields.of(Locale.getDefault()).weekOfYear()).toString() +
                 "-" + date.year.toString()
             return listOf("all", "day_$day", "week_$week")
+        }
+
+        /**
+         * Якорь для линка `prev` в [openBaseCells] (fix-pending-gate-false-
+         * vetoes D3): только когда первая подтвержденная точка новее якоря
+         * по времени. При инверсии (точка старше якоря, морозка/догоняющий
+         * flush) линк дал бы прямую сквозь непосещенную местность → null.
+         * Чистая функция, unit-тестируется.
+         */
+        fun linkAnchorFor(anchor: RawPoint?, confirmed: List<RawPoint>): RawPoint? {
+            val first = confirmed.firstOrNull() ?: return null
+            return anchor?.takeIf { first.time > it.time }
+        }
+
+        /**
+         * План ремонта ложных вето (fix-pending-gate-false-vetoes E, D5):
+         * чистая переобработка подозрительных точек трека исправленной
+         * логикой ворот C. Кандидаты:
+         *  (1) `fogOpened=2` с `rejectReason=veto_return` — подозрение на
+         *      ложный roundTrip (морозка + инверсия времени, 49 точек 25.09);
+         *  (2) `fogOpened=0` старше [PendingGate.MAX_PENDING_AGE_S] от
+         *      новейшей точки трека — застрявший хвост, который живой flush
+         *      уже не разберет (2 точки 19:10 25.09).
+         *
+         * Контекст решения — точечный, как в живом конвейере: якорь = самая
+         * новая ОТКРЫТАЯ точка строго старше кандидата (включая открытые в
+         * этом же проходе), `newest` = первая точка трека ПОСЛЕ кандидата
+         * («куда пошла траектория», аналог `batch.last()` живого flush; конец
+         * трека → сам кандидат, тогда out == back и вето геометрически
+         * невозможно). Дальше — те же предикаты, что в [PendingGate]:
+         * временная монотонность roundTrip (D1), протухание только не-MOVING.
+         *
+         * Честные вето переигрываются в ту же сторону: вылет на 4 км с
+         * возвратом дает anchor=офис(старый), newest=офис(следующая) →
+         * out≈4км, back≈0 → снова `veto_return`. Идемпотентно.
+         * Чистая функция, unit-тестируется ([RepairPlanTest]).
+         */
+        fun planRepair(points: List<TrackPointEntity>): RepairPlan {
+            val asc = points.sortedWith(compareBy({ it.time }, { it.id }))
+            val last = asc.lastOrNull() ?: return RepairPlan(emptyList(), emptyMap())
+            val candidates = asc.filter {
+                (it.fogOpened == 2 && it.rejectReason == VETO_RETURN) ||
+                    (it.fogOpened == 0 &&
+                        (last.time - it.time) / 1000 > PendingGate.MAX_PENDING_AGE_S)
+            }
+            if (candidates.isEmpty()) return RepairPlan(emptyList(), emptyMap())
+            val candIds = candidates.mapTo(HashSet()) { it.id }
+            // Следующая точка трека после кандидата (или сам кандидат).
+            val nextOf = HashMap<Long, TrackPointEntity>()
+            for (i in asc.indices) {
+                if (asc[i].id !in candIds) continue
+                var j = i + 1
+                while (j < asc.size && asc[j].time <= asc[i].time) j++
+                nextOf[asc[i].id] = if (j < asc.size) asc[j] else asc[i]
+            }
+            // Открытые точки трека — пул якорей; подтвержденные входят в него же.
+            val openedPool = ArrayList(asc.filter { it.fogOpened == 1 })
+            val confirm = ArrayList<TrackPointEntity>()
+            val veto = HashMap<Long, String>()
+            for (c in candidates) {
+                val anchor = openedPool.filter { it.time < c.time }.maxByOrNull { it.time }
+                val next = nextOf[c.id] ?: c
+                val out = anchor?.let { haversineM(it.lat, it.lon, c.lat, c.lon) } ?: 0.0
+                val back = anchor?.let { haversineM(it.lat, it.lon, next.lat, next.lon) } ?: 0.0
+                val roundTrip = anchor != null &&
+                    c.time > anchor.time &&
+                    out > PendingGate.VETO_MIN_DIST_M &&
+                    back < TrustEngine.RETURN_RATIO * out
+                val stale = c.state != TrustEngine.State.MOVING.name &&
+                    (next.time - c.time) / 1000 > PendingGate.MAX_PENDING_AGE_S
+                when {
+                    stale -> veto[c.id] = VETO_STALE
+                    roundTrip -> veto[c.id] = VETO_RETURN
+                    else -> {
+                        confirm.add(c)
+                        openedPool.add(c)
+                    }
+                }
+            }
+            return RepairPlan(confirm, veto)
         }
 
         /**

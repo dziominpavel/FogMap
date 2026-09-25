@@ -52,6 +52,26 @@ class FogMapApp : Application() {
                 container.dataStore.data.first()[PrefsKeys.DIAG_ENABLED] ?: true
             }.getOrDefault(true)
             DevLog.enabled = enabled
+            // Разовый ремонт ложных veto_return (fix-pending-gate-false-vetoes
+            // E): стартует сразу при старте приложения, пока БД уже собрана в
+            // AppContainer, а карта только открывается. Один раз за жизнь БД
+            // (флаг в counters), идемпотентен; ошибка не роняет старт — флаг
+            // не запишется и проход повторится в следующий запуск.
+            runCatching { container.fogRepository.repairVetoed() }
+                .onSuccess { s ->
+                    if (s != null) {
+                        DevLog.i(
+                            "TRACK", "pending_gate_repaired",
+                            mapOf("tracks" to s.tracks, "points" to s.points, "cells" to s.cells)
+                        )
+                    }
+                }
+                .onFailure {
+                    DevLog.w(
+                        "TRACK", "pending_gate_repair_failed",
+                        mapOf("err" to (it.message ?: it::class.java.simpleName))
+                    )
+                }
             // Подписка на тумблер на весь процесс.
             runCatching {
                 container.dataStore.data.collect { prefs ->
