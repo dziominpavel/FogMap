@@ -11,6 +11,12 @@
 
 ### Добавлено
 
+- **Телеметрия отказов старта и логи прошлых суток на диагностике** (change `diag-start-failures`):
+  - `TrackingService.start(context, via)` пишет `TRACK/start_attempt` с исходом `started`/`start_failed`, классом и обрезанным (200 симв.) текстом ошибки; вызывающие точки передают `via` (`map`/`onboarding`/`boot`/`watchdog`). Ранние выходы `onCreate()` пишут `TRACK/service_init_skip` (`no_play_services`/`no_permission`/`foreground_exception`) до `stopSelf()` — раньше эти отказы были полностью невидимы.
+  - `TrackingWatchdogWorker`: `TRACK/watchdog` на всех 4 ранних выходах и на успешном старте, `TRACK/watchdog_schedule` (`scheduled`/`schedule_failed`) из `FogMapApp` и `BootWorker` — воркер больше не может молча перестать работать.
+  - Экран «Диагностика»: список файлов DevLog (имя, размер, время изменения) с тапом на строку — шаринг выбранного файла через FileProvider; «Поделиться» шарит текущий файл, пустой список показывает заглушку.
+  - Тесты: `DevLogPrivacyTest` (события без lat/lon, обрезка `err_msg`, `errText`), `DevLogTest` (payload отказов — плоский JSON, числа с точкой); `compileDebugKotlin`/`testDebugUnitTest`/`assembleRelease` зелёные.
+
 - **Прогресс по 13 регионам Беларуси** (change `add-region-progress`, поле 4.3 открыто):
   - Полигоны регионов из OSM (6 областных городов, 6 областей, республика; outer-only, ray casting + bbox pre-filter); хардкод в `region/Regions.kt`.
   - Materialized counters `region_<id>_cells` инкрементируются в той же транзакции, что и открытие ячеек FogRepository; точка в зоне пересечения (Минск в Минской области) попадает в оба счётчика.

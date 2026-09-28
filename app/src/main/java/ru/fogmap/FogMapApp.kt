@@ -83,6 +83,18 @@ class FogMapApp : Application() {
         // Watchdog трекинга (tracking-reliability 2.2): переживает убийство процесса.
         // Application.onCreate выполняется в любом процессе приложения, включая
         // процесс воркеров, — расписание KEEP идемпотентно.
+        // Исход внутри schedule() пишет сам; onFailure страхует от отказа,
+        // случившегося до внутреннего runCatching (diag-start-failures 1.5).
         runCatching { TrackingWatchdogWorker.schedule(this) }
+            .onFailure {
+                DevLog.w(
+                    "TRACK", "watchdog_schedule",
+                    mapOf(
+                        "outcome" to "schedule_failed",
+                        "err_class" to it.javaClass.simpleName,
+                        "err_msg" to (it.message ?: "").take(200)
+                    )
+                )
+            }
     }
 }

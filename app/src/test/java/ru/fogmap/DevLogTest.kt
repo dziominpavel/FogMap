@@ -80,4 +80,37 @@ class DevLogTest {
         assertNotNull(DevLog.parse(line))
         assertTrue(DevLog.parse(line)!!.payloadJson.contains("a/b"))
     }
+
+    /**
+     * diag-start-failures 3.2: payload событий отказов старта — плоский JSON
+     * (ровно один уровень, без массивов) и числа с точкой при любой локали.
+     */
+    @Test
+    fun `payload отказов старта плоский и без вложенности`() {
+        DevLog.w(
+            "TRACK", "start_attempt",
+            mapOf(
+                "via" to "watchdog", "outcome" to "start_failed",
+                "err_class" to "ForegroundServiceStartNotAllowedException",
+                "err_msg" to "startForegroundService while app is in background"
+            )
+        )
+        DevLog.i("TRACK", "watchdog", mapOf("outcome" to "started", "period_m" to 15))
+        DevLog.w("TRACK", "service_init_skip", mapOf("reason" to "no_permission"))
+        DevLog.w(
+            "TRACK", "watchdog_schedule",
+            mapOf("outcome" to "schedule_failed", "err_class" to "IllegalStateException", "err_msg" to "boom")
+        )
+        val payloads = DevLog.snapshot().takeLast(4).map { DevLog.parse(it)!!.payloadJson }
+        assertEquals(4, payloads.size)
+        for (p in payloads) {
+            assertTrue("объект: $p", p.startsWith("{") && p.endsWith("}"))
+            assertEquals("вложенность: $p", 1, p.count { it == '{' })
+            assertTrue("массивы запрещены: $p", !p.contains('['))
+            assertTrue("нет исхода: $p", p.contains("\"outcome\":") || p.contains("\"reason\":"))
+        }
+        assertTrue(payloads[1].contains("\"period_m\":15"))
+        // Числа — всегда с точкой, независимо от локали устройства.
+        assertTrue(DevLog.buildPayloadJson(mapOf("gap_ms" to 720000.5)).contains(":720000.5"))
+    }
 }

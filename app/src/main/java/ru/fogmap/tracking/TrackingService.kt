@@ -134,13 +134,24 @@ class TrackingService : LifecycleService() {
         ensureChannel()
         // Без разрешений или Play Services сервис не имеет права на FGS type=location:
         // тихо останавливаемся, НЕ роняем процесс (проверено на эмуляторе API 36).
-        if (!TrackingPreconditions.playServicesAvailable(this) || !canTrack(this)) {
+        if (!TrackingPreconditions.playServicesAvailable(this)) {
+            // Ранний выход до stopSelf: без события дыра выглядела бы как «сервис молча исчез».
+            DevLog.w("TRACK", "service_init_skip", mapOf("reason" to "no_play_services"))
+            stopSelf()
+            return
+        }
+        if (!canTrack(this)) {
+            DevLog.w("TRACK", "service_init_skip", mapOf("reason" to "no_permission"))
             stopSelf()
             return
         }
         try {
             startForegroundCompat(buildNotification(paused = false))
         } catch (e: RuntimeException) {
+            DevLog.w(
+                "TRACK", "service_init_skip",
+                mapOf("reason" to "foreground_exception", "err" to errText(e))
+            )
             stopSelf()
             return
         }
@@ -1118,13 +1129,47 @@ class TrackingService : LifecycleService() {
                     context, Manifest.permission.ACCESS_COARSE_LOCATION
                 ) == PackageManager.PERMISSION_GRANTED
 
-        fun start(context: Context) {
-            if (!canTrack(context)) return
+        /**
+         * Текст ошибки для DevLog (diag-start-failures): только класс и
+         * обрезанное сообщение, без intent-экстров и координат (design D6).
+         */
+        fun errText(e: Throwable): String =
+            (e.javaClass.simpleName + ": " + (e.message ?: "")).take(ERR_MSG_MAX)
+
+        const val ERR_MSG_MAX = 200
+
+        /**
+         * Старт/перезапуск трекинга. Каждая попытка оставляет след
+         * `TRACK/start_attempt` с исходом (diag-start-failures): без него
+         * отказ `startForegroundService` из фона выглядел бы как пустое окно
+         * в таймлайне. `via` — кто пытался стартовать (design D2).
+         * Возвращает true, если попытка была предпринята без отказа платформы.
+         */
+        fun start(context: Context, via: String = "code"): Boolean {
+            if (!canTrack(context)) return failStart(via, null)
             val i = Intent(context, TrackingService::class.java)
-            runCatching {
+            val err = runCatching {
                 if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(i)
                 else context.startService(i)
+            }.exceptionOrNull()
+            if (err == null) {
+                DevLog.i("TRACK", "start_attempt", mapOf("via" to via, "outcome" to "started"))
+                return true
             }
+            return failStart(via, err)
+        }
+
+        /** Отказ старта (diag-start-failures 1.1): класс + обрезанный текст. */
+        private fun failStart(via: String, e: Throwable?): Boolean {
+            DevLog.w(
+                "TRACK", "start_attempt",
+                mapOf(
+                    "via" to via, "outcome" to "start_failed",
+                    "err_class" to (e?.javaClass?.simpleName ?: "NoLocationPermission"),
+                    "err_msg" to (e?.message ?: "").take(ERR_MSG_MAX)
+                )
+            )
+            return false
         }
     }
 }

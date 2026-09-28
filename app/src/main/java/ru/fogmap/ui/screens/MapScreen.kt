@@ -155,7 +155,7 @@ fun MapScreen(nav: NavController) {
         DisposableEffect(isPaused) {
             val job = scope.launch {
                 if (!isPaused && hasPlay && TrackingService.canTrack(context)) {
-                    runCatching { TrackingService.start(context) }
+                    runCatching { TrackingService.start(context, via = "map") }
                 }
             }
             onDispose { job.cancel() }

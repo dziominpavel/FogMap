@@ -12,6 +12,30 @@
 
 ---
 
+## 2026-09-28 - diag-start-failures: телеметрия отказов старта + доступ к логам прошлых суток
+
+Что сделали:
+- Проанализированы поездки 26–28.09 (распакован `track-debug_2026-09-26_2026-09-28.zip`, `dist/fog-2026-09-28.jsonl`): воскресная дыра 12:18:09 → 22:30:53 (36 764 с, 175 444 м) — в `days/2026-09-27.jsonl` ноль колбэков, восстановить трек из данных FogMap невозможно; 09-27/09-28 `rejected_no-fix` = 0 (в `counters.json` всего 2, только 09-25/09-26); процесс мёртв 10:53–14:05 28.09 (0 строк DevLog в часы 11–13, 0 raw-fix, ни одного `service_stop`, watchdog 15 мин молчал 13 раз); линия рисуется целиком (`HistoryScreens.kt:291`), режут только `trustRuns`/`daySections` — прямая 175 км пришла из данных.
+- Выделены 4 бага, из них в скоуп change взят только первый; остальные — Non-goals и темы будущих changes: (1) молчаливые отказы старта, (2) watchdog/фоновый старт FGS не поднимает сервис, (3) резка линии по dt-разрыву, (4) `loc.time` в `TrustEngine.kt:196` → ложные jump (39 из 70 на субботу).
+- OpenSpec change `diag-start-failures` (proposal, 2 спеки `dev-logging`+`tracking-reliability`, design, tasks 14 шт.); `openspec validate` зелёный, scope подтверждён пользователем.
+- Группа 1 (телеметрия): `TrackingService.start(context, via)` пишет `TRACK/start_attempt` (`started`/`start_failed` + `err_class`/`err_msg` ≤200 через общий `failStart`, для отказа прав — `NoLocationPermission`); все 4 вызова получили `via` (`MapScreen`/`OnboardingScreen`/`BootWorker`/`TrackingWatchdogWorker`); `onCreate()` пишет `TRACK/service_init_skip` (`no_play_services`/`no_permission`/`foreground_exception`) **до** каждого `stopSelf()`; `TrackingWatchdogWorker.doWork()` пишет `TRACK/watchdog` на всех 4 ранних выходах и на `started`; `schedule()` пишет `TRACK/watchdog_schedule` (`scheduled`/`schedule_failed`), обёртки `.onFailure` добавлены в `FogMapApp.kt:86` и `BootWorker.kt:42`.
+- Группа 2 (экран): `DiagDiagnosticsScreen` — блок «Файлы лога» (имя, размер КБ, время изменения, divider, тап → share выбранного), заглушка при пустом списке, кнопка «Поделиться» шарит `currentFile()`, «Очистить логи» обновляет список; шаринг через существующий FileProvider `${packageName}.devlog` (путь `cache/logs/` уже покрыт `devlog_paths.xml`).
+- Группа 3: `compileDebugKotlin`, `testDebugUnitTest`, `assembleRelease` — BUILD SUCCESSFUL; APK `dist/FogMap-release-latest.apk` (1.5.2.38-gaec5add-dirty, 64,5 МБ) собран и ждёт установки.
+- Тесты: `DevLogPrivacyTest` +2 (4 события обязаны существовать, без lat/lon, все `err_msg` через `take(`; прямая проверка `TrackingService.errText` на обрезку/класс), `DevLogTest` +1 (payload отказов плоский: один `{`, без `[`, `period_m` целое, `720000.5` с точкой).
+
+Что решили:
+- Скоуп только «Диагностика старта»; 3 других бага не трогаем в этом change (зафиксировано в Non-goals `proposal.md`).
+- `err_msg` — всегда `.take(ERR_MSG_MAX)` (200), поэтому ветка без разрешения логируется через общий `failStart(via, null)` с `err_class=NoLocationPermission` — единая точка отказа вместо дублирования payload.
+
+Открытые вопросы:
+- **Дедлайн 29.09 ~23:59**: `fog-2026-09-27.jsonl` удаляется по TTL 24 ч при первом старте процесса после ~00:00 30.09 — задачи 3.4/3.5 (установка, ручной прогон, шаринг лога 27.09 в `dist/`) требуют телефона по кабелю; статус на 16:35: телефон не подключён, код готов, APK собран.
+- Задачи 2.2/2.3 (ручной тест шаринга/пустого списка) — только на устройстве, той же вечерней сессией, что 3.3–3.5.
+- Архивация: синк дельт в основные спеки (`dev-logging` +2 сценария и абзац наблюдаемости в «Фоновый трек-лог» и «Экран диагностики», `tracking-reliability` +3 сценария и абзац в «Watchdog живости»; `openspec validate --specs` → 15 passed/0 failed), затем change перенесён в `openspec/changes/archive/2026-09-28-diag-start-failures/` — с предупреждением: **5 задач (2.2, 2.3, 3.3, 3.4, 3.5) не закрыты**, верификация на устройстве перенесена в вечернюю сессию отдельным заходом (изменения уже в основных спеках, change активных нет). Баги 2–4 из анализа — отдельные changes (watchdog/фоновый FGS, dt-разрыв, `loc.time` → ложные jump).
+- Версия: без бампа (в Unreleased; бамп на релизе).
+- Инструментальная заметка: на этой машине python не установлен (в PATH только заглушка `WindowsApps`, `python` → exit 9009, `py` отсутствует) — `check-version.py` воспроизведён PowerShell'ом с теми же инвариантами (version = 1.5.2 = первая версионная секция CHANGELOG), exit=0.
+
+---
+
 ## 2026-09-25 — fix-pending-gate-false-vetoes: диагноз 49 ложных veto_return 25.09 + полный apply A–E
 
 Что сделали:

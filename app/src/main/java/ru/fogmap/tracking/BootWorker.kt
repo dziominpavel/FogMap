@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.first
 import ru.fogmap.FogMapApp
 import ru.fogmap.R
 import ru.fogmap.data.PrefsKeys
+import ru.fogmap.diag.DevLog
 
 /**
  * Перезапуск трекинга после ребута (задача 3.3).
@@ -39,14 +40,25 @@ class BootWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         Log.i(TAG, "boot-restart: paused=$paused")
         // Watchdog на случай будущих убийств (tracking-reliability 2.2).
         // KEEP-политика делает повторное расписание no-op.
+        // Исход внутри schedule() пишет сам; onFailure — страховка (1.5).
         runCatching { TrackingWatchdogWorker.schedule(applicationContext) }
+            .onFailure {
+                DevLog.w(
+                    "TRACK", "watchdog_schedule",
+                    mapOf(
+                        "outcome" to "schedule_failed",
+                        "err_class" to it.javaClass.simpleName,
+                        "err_msg" to (it.message ?: "").take(200)
+                    )
+                )
+            }
         if (paused) return Result.success()
         val play = TrackingPreconditions.playServicesAvailable(applicationContext)
         val track = TrackingService.canTrack(applicationContext)
         Log.i(TAG, "boot-restart: play=$play canTrack=$track")
         if (!play || !track) return Result.success()
         return try {
-            TrackingService.start(applicationContext)
+            TrackingService.start(applicationContext, via = "boot")
             Log.i(TAG, "boot-restart: TrackingService.start called")
             Result.success()
         } catch (t: Throwable) {

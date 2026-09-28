@@ -120,7 +120,7 @@ fun OnboardingScreen(nav: NavController) {
                         }
                         scope.launch {
                             app.container.settingsRepository.setOnboardingDone()
-                            runCatching { TrackingService.start(context) }
+                            runCatching { TrackingService.start(context, via = "onboarding") }
                             nav.navigate("map") { popUpTo("onboarding") { inclusive = true } }
                         }
                     }) { Text("Готово") }
