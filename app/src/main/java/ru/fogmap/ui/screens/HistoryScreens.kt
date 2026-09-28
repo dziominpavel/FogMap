@@ -265,6 +265,37 @@ internal fun trustRuns(trusts: List<Int>, open: Int): List<Triple<Int, Int, Bool
 }
 
 /**
+ * Порог разрыва доставки для отрисовки (fix-track-reliability-0928):
+ * соседние точки дальше 10 минут не соединяются отрезком — дыра данных
+ * показывается как дыра, а не прямой нитью сквозь непосещенную местность.
+ * Обычная доставка 1-60 с, остановка/подъезд — до 5 минут: 10 минут
+ * с запасом не режет нормальный трек.
+ */
+internal const val LINE_BREAK_GAP_MS = 10 * 60_000L
+
+/**
+ * Сегменты линии дня по разрыву доставки: индексные диапазоны [start, end),
+ * между которыми разрыв времени не больше [gapMs]. Чистое, тестируется;
+ * рисуется каждый сегмент отдельной полилинией.
+ */
+internal fun lineSegments(
+    times: List<Long>,
+    gapMs: Long = LINE_BREAK_GAP_MS
+): List<IntRange> {
+    if (times.isEmpty()) return emptyList()
+    val out = ArrayList<IntRange>()
+    var start = 0
+    for (i in 1 until times.size) {
+        if (times[i] - times[i - 1] > gapMs) {
+            out.add(start until i)
+            start = i
+        }
+    }
+    out.add(start until times.size)
+    return out
+}
+
+/**
  * Секции дня по часам точки (trust-v2 3.1): представление внутри чанка,
  * хранение не режется. Ночь 23–4, утро 5–10, день 11–16, вечер 17–22.
  */
@@ -436,34 +467,41 @@ fun HistoryDetailScreen(nav: NavController, trackId: Long) {
             } else {
                 // Цветная линия по доверию (trust-v2 3.2): доверенные — синим,
                 // недоверенные — серым тоньше. Только история, на карту не тащим.
-                val runs = remember(pointEnts) {
-                    trustRuns(
-                        pointEnts.map { it.trust },
-                        ru.fogmap.fog.FogGrid.TRUST_OPEN
-                    )
-                }
+                // Разрыв доставки (fix-track-reliability-0928) рвет линию на
+                // сегменты, дальше дыры прямая нить не рисуется.
+                val segments = remember(pointEnts) { lineSegments(pointEnts.map { it.time }) }
                 AndroidView(
                     factory = { ctx ->
                         MapView(ctx).apply {
                             onStart()
                             runCatching { mapWindow.map.setNightModeEnabled(detailNight) }
                             mapWindow.map.move(CameraPosition(points.first(), 14f, 0f, 0f))
-                            for ((s, e, trusted) in runs) {
+                            for (seg in segments) {
+                                val s = seg.first
+                                val e = (seg.last + 1).coerceAtMost(points.size)
                                 if (e - s < 2) continue
-                                val line = mapWindow.map.mapObjects.addPolyline(
-                                    Polyline(points.subList(s, e.coerceAtMost(points.size)))
+                                val segPoints = points.subList(s, e)
+                                val segTrusts = pointEnts.subList(s, e).map { it.trust }
+                                val runs = trustRuns(
+                                    segTrusts, ru.fogmap.fog.FogGrid.TRUST_OPEN
                                 )
-                                // Доверенные — синим пожирнее, недоверенные —
-                                // серым пунктиром (LineStyle, не deprecated).
-                                if (trusted) {
-                                    line.setStrokeColor(TRUSTED_LINE)
-                                    line.style = LineStyle().apply { strokeWidth = 5f }
-                                } else {
-                                    line.setStrokeColor(UNTRUSTED_LINE)
-                                    line.style = LineStyle().apply {
-                                        strokeWidth = 3f
-                                        dashLength = 8f
-                                        gapLength = 6f
+                                for ((rs, re, trusted) in runs) {
+                                    if (re - rs < 2) continue
+                                    val line = mapWindow.map.mapObjects.addPolyline(
+                                        Polyline(segPoints.subList(rs, re.coerceAtMost(segPoints.size)))
+                                    )
+                                    // Доверенные — синим пожирнее, недоверенные —
+                                    // серым пунктиром (LineStyle, не deprecated).
+                                    if (trusted) {
+                                        line.setStrokeColor(TRUSTED_LINE)
+                                        line.style = LineStyle().apply { strokeWidth = 5f }
+                                    } else {
+                                        line.setStrokeColor(UNTRUSTED_LINE)
+                                        line.style = LineStyle().apply {
+                                            strokeWidth = 3f
+                                            dashLength = 8f
+                                            gapLength = 6f
+                                        }
                                     }
                                 }
                             }

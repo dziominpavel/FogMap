@@ -435,4 +435,30 @@ class TrustEngineTest {
         val none = hp.copy(speed = null)
         assertFalse(TrustEngine.speedGateBlocksStand(none))
     }
+
+    // --- fix-track-reliability-0928: зазоры вердикта по времени приёма ---
+
+    @Test
+    fun `повторяющаяся метка фикса не дает ложный jump`() {
+        // Ходьба 1.5 м/с по прямой: implied стабильно ниже потолка.
+        val walk = (0 until 8).map { pt(53.9 + it * 0.000108, dtS = 8) }
+        val nextLat = 53.9 + 7 * 0.000108 + 0.0009 // ~100 м вперед по той же трассе
+
+        // Контроль старого поведения: та же метка фикса, recv не заполнен —
+        // dt схлопывается до 1 с, implied 100 м/с, честное движение в jump.
+        val dupFix = TrustEngine.HistPoint(time = t, lat = nextLat, lon = 27.0, acc = 10f)
+        assertEquals(dupFix.time, dupFix.recv)
+        val old = run(walk + dupFix).last()
+        assertEquals(TrustEngine.State.SUSPECT, old.state)
+        assertEquals(FogRepository.REJECT_JUMP, old.countReject)
+
+        // Фактический приём через 8 с при той же метке фикса: implied 12.5 м/с,
+        // точка остаётся MOVING (26.09: 27 из 76 jump были такими).
+        val arrived = TrustEngine.HistPoint(
+            time = t, lat = nextLat, lon = 27.0, acc = 10f, recv = t + 8_000
+        )
+        val v = run(walk + arrived).last()
+        assertEquals(TrustEngine.State.MOVING, v.state)
+        assertNull(v.countReject)
+    }
 }

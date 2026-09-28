@@ -282,7 +282,10 @@ class TrackingService : LifecycleService() {
         // дропнутую STAND-статику, иначе холодный старт не выйдет из STAND).
         val hp = TrustEngine.HistPoint(
             time = loc.time, lat = loc.latitude, lon = loc.longitude, acc = loc.accuracy,
-            speed = speedOrNull
+            speed = speedOrNull,
+            // gps-trust: зазоры вердикта считаются по моменту приёма, а не по
+            // Location.getTime() — провайдер отдает повторяющиеся метки фикса.
+            recv = System.currentTimeMillis()
         )
         synchronized(buffer) {
             if (pausedCached) {
@@ -315,7 +318,7 @@ class TrackingService : LifecycleService() {
                     if (keep != null) trustHistory.addLast(keep)
                 }
                 trustHistory.addLast(hp)
-                TrustEngine.pruneHistory(trustHistory, hp.time)
+                TrustEngine.pruneHistory(trustHistory, hp.recv)
                 rawBuffer.add(
                     rawOf(
                         loc = loc, accOrDef = accOrDef, speedOrNull = speedOrNull,
@@ -366,7 +369,7 @@ class TrackingService : LifecycleService() {
             // История ограничена временем (fix-eco-signal-loss 1.1), а не
             // восемью точками: на 1 Гц окно из 8 точек покрывало 7 секунд
             // и движение классифицировалось как статика.
-            TrustEngine.pruneHistory(trustHistory, hp.time)
+            TrustEngine.pruneHistory(trustHistory, hp.recv)
             // Черный ящик: вердикт пишется всегда, включая STAND.
             // В STANDBY семплируем сыряк 1/6 (battery-eco 2.5), иначе раздуваем БД.
             val wantRaw = !ecoCached || ecoProfile != EcoGovernor.Profile.STANDBY ||
@@ -453,7 +456,7 @@ class TrackingService : LifecycleService() {
         time = loc.time, lat = loc.latitude, lon = loc.longitude,
         acc = accOrDef, speed = speedOrNull, isMock = isMock, filter = filter,
         state = state, trust = trust, openFog = openFog, rejectReason = rejectReason,
-        history = history, prev = prev
+        history = history, prev = prev, recv = System.currentTimeMillis()
     )
 
     private suspend fun flush() {

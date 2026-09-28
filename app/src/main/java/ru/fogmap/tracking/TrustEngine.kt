@@ -115,12 +115,23 @@ object TrustEngine {
     enum class State { STAND, MOVING, SUSPECT }
 
     data class HistPoint(
+        /** Метка фикса провайдера: хранится, отображается, режет секции дня. */
         val time: Long,
         val lat: Double,
         val lon: Double,
         val acc: Float,
         /** Скорость Fused из того же фикса (nullable), для speed-гейта и kind. */
-        val speed: Float? = null
+        val speed: Float? = null,
+        /**
+         * Момент приёма точки в колбэке (wall-clock, монотонно возрастает).
+         * Все временные зазоры вердикта считаются по нему, а не по [time]:
+         * провайдер отдаёт повторяющиеся и регрессирующие `Location.getTime()`,
+         * из-за которых implied-скорость вздувалась и честное движение
+         * уходило в `jump` (разбор логов 26.09: 27 из 76 jump на парах
+         * с dt ≤ 1 с). Дефолт = [time] — реплей старых данных ведет себя
+         * как раньше.
+         */
+        val recv: Long = time
     )
 
     data class PrevState(
@@ -193,7 +204,7 @@ object TrustEngine {
             return standOrMoving(prev, TRUST_START, kind, speedGate)
         }
         val last = history.last()
-        val dtS = ((new.time - last.time) / 1000).coerceAtLeast(1)
+        val dtS = ((new.recv - last.recv) / 1000).coerceAtLeast(1)
         val shiftM = FogRepository.haversineM(last.lat, last.lon, new.lat, new.lon)
         val implied = shiftM / dtS
 
@@ -219,7 +230,7 @@ object TrustEngine {
         // Авторитетное правило: якорь старше окна и дрейф в радиусе — STAND.
         // Дрейф больше радиуса — не статика, решает обычная ветка.
         val oldest = history.first()
-        val anchorAgeMs = new.time - oldest.time
+        val anchorAgeMs = new.recv - oldest.recv
         val drift = FogRepository.haversineM(oldest.lat, oldest.lon, new.lat, new.lon)
         if (anchorAgeMs >= STATIC_MIN_SPAN_MS) {
             if (drift <= STATIC_RADIUS_M) {
@@ -265,7 +276,7 @@ object TrustEngine {
         if (history.size >= 2) {
             val a = history[history.size - 2]
             val b = history.last()
-            val gapS = ((b.time - a.time) / 1000).coerceAtLeast(1)
+            val gapS = ((b.recv - a.recv) / 1000).coerceAtLeast(1)
             if (gapS > SILENCE_RESET_S &&
                 shiftM <= TELEPORT_M &&
                 new.acc <= LocationFilter.MAX_ACCURACY_M
@@ -390,11 +401,14 @@ object TrustEngine {
      *
      * Всегда оставляем минимум два последних кадра: предпоследний нужен
      * ветке продолжения пробуждения (2г), когда старая точка уже выпала
-     * из временного окна, а следующая точка пачки пришла через доли секунды.
+     * из временного окна, а следующая точка пачки пришла через доли секунд.
+     *
+     * [nowMs] — wall-clock (момент приёма новейшей точки), как и `recv`
+     * чистимых точек: см. HistPoint.recv.
      */
     fun pruneHistory(hist: MutableList<HistPoint>, nowMs: Long) {
         while (hist.size > HISTORY_MAX_COUNT) hist.removeAt(0)
-        while (hist.size > 2 && nowMs - hist.first().time > HISTORY_MAX_AGE_MS) {
+        while (hist.size > 2 && nowMs - hist.first().recv > HISTORY_MAX_AGE_MS) {
             hist.removeAt(0)
         }
     }
@@ -423,7 +437,7 @@ object TrustEngine {
         val speeds = ArrayList<Double>(history.size)
         for (i in 1 until history.size) {
             val a = history[i - 1]; val b = history[i]
-            val dt = ((b.time - a.time) / 1000).coerceAtLeast(1)
+            val dt = ((b.recv - a.recv) / 1000).coerceAtLeast(1)
             speeds.add(FogRepository.haversineM(a.lat, a.lon, b.lat, b.lon) / dt)
         }
         if (speeds.isEmpty()) return 0.0
@@ -444,7 +458,7 @@ object TrustEngine {
         for (i in history.size - 1 downTo 1) {
             if (n >= k) break
             val a = history[i - 1]; val b = history[i]
-            val dt = ((b.time - a.time) / 1000).coerceAtLeast(1)
+            val dt = ((b.recv - a.recv) / 1000).coerceAtLeast(1)
             m = maxOf(m, FogRepository.haversineM(a.lat, a.lon, b.lat, b.lon) / dt)
             n++
         }

@@ -1,6 +1,9 @@
 package ru.fogmap.ui.screens
 
 import android.content.Intent
+import android.net.Uri
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -19,6 +22,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -30,6 +34,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.NavController
 import java.io.File
 import java.time.Instant
@@ -55,6 +62,34 @@ fun DiagDiagnosticsScreen(nav: NavController) {
     val tail by DevLog.tail.collectAsState()
     var status by remember { mutableStateOf("") }
     var files by remember { mutableStateOf(emptyList<File>()) }
+
+    // Фоновый перезапуск (fix-track-reliability-0928): без исключения из
+    // оптимизации батареи молчат ОБА канала watchdog, и по логу это не
+    // отличить от «будильник не сработал». Читаем при каждом ON_RESUME —
+    // возвращаемся из системных настроек сразу с новым значением.
+    val pm = remember(context) {
+        context.getSystemService(android.content.Context.POWER_SERVICE) as PowerManager
+    }
+    var batteryIgnored by remember { mutableStateOf<Boolean?>(null) }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                batteryIgnored = runCatching {
+                    pm.isIgnoringBatteryOptimizations(context.packageName)
+                }.getOrDefault(false)
+            }
+        }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
+
+    fun requestBatteryIgnore() {
+        val uri = Uri.parse("package:${context.packageName}")
+        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, uri)
+        runCatching { context.startActivity(intent) }
+            .onFailure { status = "Не удалось открыть настройки батареи" }
+    }
 
     fun refreshFiles() {
         scope.launch {
@@ -117,6 +152,26 @@ fun DiagDiagnosticsScreen(nav: NavController) {
                 TextButton(onClick = { nav.popBackStack() }) { Text("Назад") }
             }
             if (status.isNotEmpty()) Text(status, style = MaterialTheme.typography.bodyMedium)
+            Card(Modifier.fillMaxWidth()) {
+                Column(
+                    Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text("Фоновый перезапуск", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        when (batteryIgnored) {
+                            true -> "Батарея: оптимизация игнорируется, каналам не мешает"
+                            false -> "Батарея: приложение может быть заморожено — " +
+                                "перезапуск в фоне молчит обоими каналами"
+                            null -> "Батарея: состояние не прочитано"
+                        },
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    OutlinedButton(onClick = { requestBatteryIgnore() }) {
+                        Text("Разрешить работать в фоне")
+                    }
+                }
+            }
             Text("Файлы лога", style = MaterialTheme.typography.titleSmall)
             if (files.isEmpty()) {
                 Text(

@@ -57,6 +57,13 @@
             </intent-filter>
         </receiver>
 
+        <!-- Второй канал watchdog живости трекинга (fix-track-reliability-0928):
+             будильник срабатывает, когда периодическая работа WorkManager
+             приостановлена OEM'ом — 28.09 именно так молчали 13 циклов. -->
+        <receiver
+            android:name=".tracking.WatchdogAlarmReceiver"
+            android:exported="false" />
+
         <!-- ВРЕМЕННОЕ (dev-logging): Share JSONL из cache/logs. -->
         <provider
             android:name="androidx.core.content.FileProvider"
