@@ -21,14 +21,16 @@ object RawTrace {
         openFog: Int?,
         rejectReason: String?,
         history: List<TrustEngine.HistPoint>,
-        prev: TrustEngine.PrevState? = null
+        prev: TrustEngine.PrevState? = null,
+        /** Момент приёма фикса: зеркалит зазоры вердикта (HistPoint.recv). */
+        recv: Long = time
     ): RawFixEntity {
         var implied: Double? = null
         var cap: Double? = null
         var teleport: Int? = null
         val last = history.lastOrNull()
         if (last != null) {
-            val dtS = ((time - last.time) / 1000).coerceAtLeast(1)
+            val dtS = ((recv - last.recv) / 1000).coerceAtLeast(1)
             val shiftM = FogRepository.haversineM(last.lat, last.lon, lat, lon)
             implied = shiftM / dtS
             teleport = if (shiftM > TrustEngine.TELEPORT_M) 1 else 0

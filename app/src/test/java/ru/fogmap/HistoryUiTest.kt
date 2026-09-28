@@ -5,6 +5,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import ru.fogmap.fog.FogGrid
 import ru.fogmap.ui.screens.daySections
+import ru.fogmap.ui.screens.lineSegments
 import ru.fogmap.ui.screens.trustRuns
 import java.time.LocalDateTime
 import java.time.ZoneId
@@ -58,5 +59,40 @@ class HistoryUiTest {
             trustRuns(listOf(10, 5, 20), FogGrid.TRUST_OPEN)
         )
         assertTrue(trustRuns(emptyList(), FogGrid.TRUST_OPEN).isEmpty())
+    }
+
+    // --- fix-track-reliability-0928: разрыв доставки рвет линию ---
+
+    @Test
+    fun `дыра 12 18 - 22 30 не мостится прямой нитью`() {
+        val start = at(12, 18)
+        val times = listOf(
+            start, start + 8_000, start + 16_000, // до разрыва
+            at(22, 30), at(22, 30) + 8_000 // после разрыва
+        )
+        assertEquals(listOf(0..2, 3..4), lineSegments(times))
+    }
+
+    @Test
+    fun `пауза до 10 минут линию не рвет, дольше — рвет`() {
+        val base = at(12, 0)
+        val gap5 = base + 30_000 // +30 с
+        val gap10 = gap5 + 5 * 60_000L // пауза ровно 5 мин
+        val same = gap10 + 10 * 60_000L // пауза ровно 10 мин — порог не превышен
+        val broken = same + (10 * 60_000L + 1) // 10 мин 1 с — разрыв
+        assertEquals(
+            listOf(0..3, 4..4),
+            lineSegments(listOf(base, gap5, gap10, same, broken))
+        )
+    }
+
+    @Test
+    fun `сплошная доставка — один сегмент, пусто — пусто`() {
+        val base = at(9, 0)
+        assertEquals(
+            listOf(0..4),
+            lineSegments((0..4).map { base + it * 1000L })
+        )
+        assertTrue(lineSegments(emptyList()).isEmpty())
     }
 }

@@ -39,9 +39,10 @@ class BootWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         val paused = app.container.dataStore.data.first()[PrefsKeys.PAUSED] ?: false
         Log.i(TAG, "boot-restart: paused=$paused")
         // Watchdog на случай будущих убийств (tracking-reliability 2.2).
-        // KEEP-политика делает повторное расписание no-op.
-        // Исход внутри schedule() пишет сам; onFailure — страховка (1.5).
-        runCatching { TrackingWatchdogWorker.schedule(applicationContext) }
+        // Два канала (fix-track-reliability-0928); KEEP-политика делает
+        // повторное расписание no-op. Исход внутри scheduleAll() пишет сам;
+        // onFailure — страховка (1.5).
+        runCatching { TrackingWatchdog.scheduleAll(applicationContext) }
             .onFailure {
                 DevLog.w(
                     "TRACK", "watchdog_schedule",

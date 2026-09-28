@@ -11,7 +11,7 @@ import ru.fogmap.data.AppContainer
 import ru.fogmap.data.PrefsKeys
 import ru.fogmap.diag.DevLog
 import ru.fogmap.diag.DevLogFile
-import ru.fogmap.tracking.TrackingWatchdogWorker
+import ru.fogmap.tracking.TrackingWatchdog
 
 class FogMapApp : Application() {
     lateinit var container: AppContainer
@@ -81,11 +81,12 @@ class FogMapApp : Application() {
             DevLog.i("DevApp", "diag_init", mapOf("enabled" to enabled, "ttl_removed" to removed))
         }
         // Watchdog трекинга (tracking-reliability 2.2): переживает убийство процесса.
+        // Два канала (fix-track-reliability-0928): периодическая работа + будильник.
         // Application.onCreate выполняется в любом процессе приложения, включая
         // процесс воркеров, — расписание KEEP идемпотентно.
-        // Исход внутри schedule() пишет сам; onFailure страхует от отказа,
+        // Исход внутри scheduleAll() пишет сам; onFailure страхует от отказа,
         // случившегося до внутреннего runCatching (diag-start-failures 1.5).
-        runCatching { TrackingWatchdogWorker.schedule(this) }
+        runCatching { TrackingWatchdog.scheduleAll(this) }
             .onFailure {
                 DevLog.w(
                     "TRACK", "watchdog_schedule",
