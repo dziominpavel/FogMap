@@ -7,8 +7,10 @@ rem              log capture via adb run-as; installs side-by-side with release,
 rem              data does NOT overlap. Debug is for investigation only,
 rem              not for everyday tracking.
 rem   install  - also installs the APK via adb (may follow the debug word)
-rem   release  - after a successful build, publish dist\ as a GitHub release
-rem              via release.bat (tag vX.Y.Z from the file `version`)
+rem   release  - phase 1: release.ps1 -Prepare bumps the version from the
+rem              [Unreleased] section BEFORE the build (versionName is baked
+rem              into the APK), then builds, then phase 2: release.bat
+rem              publishes dist\ as a GitHub release (tag vX.Y.Z)
 rem Result: dist\FogMap-release-latest.apk ("take this") + versioned history
 rem copy in dist\archive\. Full version comes from Gradle
 rem (file `version` + git count/sha, see app/build.gradle.kts), e.g.
@@ -73,6 +75,21 @@ if "%MODE%"=="debug" (
 )
 
 echo === FogMap: building %MODE% (%TASK%) %EXTRA% ===
+if "%RELEASE%"=="1" (
+  echo.
+  echo === Phase 1/2: prepare version (release.ps1 -Prepare) ===
+  rem Version must be bumped BEFORE Gradle runs: versionName/versionCode are
+  rem baked into the APK at build time. Bumping after the build would tag
+  rem vX.Y.Z with an APK carrying the previous version inside.
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0release.ps1" -Prepare
+  if errorlevel 1 (
+    echo.
+    echo [ERROR] Release preparation failed. Nothing was tagged.
+    pause
+    exit /b 1
+  )
+  echo.
+)
 call gradlew.bat %TASK% --console=plain "-Dorg.gradle.java.home=%JAVA_HOME%" %EXTRA%
 if errorlevel 1 (
   echo.
