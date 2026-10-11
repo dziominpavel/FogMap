@@ -629,3 +629,37 @@ expedited-BootWorker; без ключа — заглушка вместо кар
   не сработали ни work, ни alarm-каналы watchdog за 100 минут.
 
 Версия: без бампа (в Unreleased; бамп на релизе)
+
+---
+
+## 2026-10-12 — remove-system-theme: две темы dark/light (без системной) + релиз 1.6.2
+
+Контекст: `/opsx-apply` change `remove-system-theme` (spec-driven) — убрать режим
+«Как в системе», оставить `dark` (дефолт) / `light`; сохранённое `system` и мусор
+нормализуются в `dark` при чтении с перезаписью DataStore (design D1).
+
+Сделали:
+- `SettingsRepository`: `ThemeModes.SYSTEM` удалён, `setThemeMode` сузил до
+  {dark, light}, нормализация при чтении с write-back в DataStore; `Theme.kt`
+  без `isSystemInDarkTheme`/`systemDark`; `MapScreen`/`HistoryScreens` переведены
+  на `isDarkTheme(themeMode)`; настройки — ровно две кнопки (Тёмная/Светлая).
+  Тест `ThemeModeTest` 3/3, `testDebugUnitTest`/`compileDebugKotlin` зелёные.
+- Гейт 5.1–5.4 пройден на эмуляторе `fogmap-test` (adb + скриншоты): установка
+  `build-apk.bat debug install` (versionCode 60), две кнопки без «Системы»,
+  переключение без перезапуска, карта day/night следует теме, засеивание
+  `theme_mode=system` через `run-as`+`dd` → после запуска в DataStore `dark`
+  и тёмный UI (нормализация подтверждена на устройстве).
+- Спека `app-shell` синкнута (2 MODIFIED; `openspec validate --specs` 15/15),
+  change перенесён в `archive/2026-10-12-remove-system-theme` (14/14 задач).
+- Фикс `build-apk.bat:80`: `)` в `echo` внутри if-блока рвал блок —
+  `release.ps1 -Prepare` запускался при любой сборке, а не только в release
+  (регрессия от 2bfc9e2); экранирование `^(` `^)` — приём из 80e5f1f.
+- Релиз 1.6.2: `release.ps1 -Prepare` → `build-apk.bat` → `release.ps1`
+  (коммит бампа, тег v1.6.2, GitHub Release).
+
+Версия: 1.6.1 → 1.6.2 (PATCH, двухрежимная тема вместо трёх + фикс релизного
+конвейера в build-apk.bat).
+
+Открытые вопросы:
+- Полевой контроль на P60 Pro после установки APK 1.6.2: переключение темы,
+  миграция со старого билда с сохранённой «Системой».
