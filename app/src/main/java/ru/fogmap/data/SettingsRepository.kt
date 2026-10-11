@@ -9,12 +9,13 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.transform
 import ru.fogmap.data.db.AppDatabase
 
 object PrefsKeys {
     val PAUSED = booleanPreferencesKey("paused")
     val ONBOARDING_DONE = booleanPreferencesKey("onboarding_done")
-    /** Тема оболочки: dark|light|system, default dark (ui-dark-redesign 1.1). */
+    /** Тема оболочки: dark|light, default dark (remove-system-theme; system удалён). */
     val THEME_MODE = stringPreferencesKey("theme_mode")
     /** ВРЕМЕННОЕ (dev-logging): вкл/выкл диагностики, default true до стабилизации. */
     val DIAG_ENABLED = booleanPreferencesKey("diag_enabled")
@@ -36,8 +37,14 @@ object PrefsKeys {
 object ThemeModes {
     const val DARK = "dark"
     const val LIGHT = "light"
-    const val SYSTEM = "system"
     const val DEFAULT = DARK
+
+    /**
+     * Нормализация при чтении (remove-system-theme, design D1): `light` -> `light`,
+     * всё остальное (включая устаревшее `system` и мусор) -> `dark`.
+     */
+    fun normalize(value: String?): String =
+        if (value == LIGHT) LIGHT else DARK
 }
 
 /** Эко-профили опроса (battery-eco 2.1): имена для DataStore и логов. */
@@ -53,8 +60,19 @@ class SettingsRepository(
 ) {
     val paused: Flow<Boolean> = store.data.map { it[PrefsKeys.PAUSED] ?: false }
     val onboardingDone: Flow<Boolean> = store.data.map { it[PrefsKeys.ONBOARDING_DONE] ?: false }
-    val themeMode: Flow<String> =
-        store.data.map { it[PrefsKeys.THEME_MODE] ?: ThemeModes.DEFAULT }
+    /**
+     * Тема только `dark`/`light` (remove-system-theme, design D1): недопустимое
+     * значение (`system`, мусор) нормализуется в `dark` и перезаписывается в
+     * DataStore при чтении; отсутствие выбора -> `dark` (без записи).
+     */
+    val themeMode: Flow<String> = store.data.transform { prefs ->
+        val raw = prefs[PrefsKeys.THEME_MODE]
+        val normalized = ThemeModes.normalize(raw)
+        emit(normalized)
+        if (raw != null && raw != normalized) {
+            store.edit { it[PrefsKeys.THEME_MODE] = normalized }
+        }
+    }
     /** ВРЕМЕННОЕ (dev-logging). */
     val diagEnabled: Flow<Boolean> = store.data.map { it[PrefsKeys.DIAG_ENABLED] ?: true }
     /** Эко-режим (battery-eco 1.1): false = base, true = eco. */
@@ -69,7 +87,7 @@ class SettingsRepository(
     suspend fun setPaused(v: Boolean) { store.edit { it[PrefsKeys.PAUSED] = v } }
     suspend fun setOnboardingDone() { store.edit { it[PrefsKeys.ONBOARDING_DONE] = true } }
     suspend fun setThemeMode(v: String) {
-        require(v in setOf(ThemeModes.DARK, ThemeModes.LIGHT, ThemeModes.SYSTEM))
+        require(v in setOf(ThemeModes.DARK, ThemeModes.LIGHT))
         store.edit { it[PrefsKeys.THEME_MODE] = v }
     }
 

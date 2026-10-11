@@ -8,7 +8,6 @@ import android.location.LocationManager
 import android.os.Looper
 import android.os.SystemClock
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -115,12 +114,9 @@ fun MapScreen(nav: NavController) {
         .collectAsState(initial = androidx.datastore.preferences.core.preferencesOf())
     val isPaused = paused[PrefsKeys.PAUSED] ?: false
     val hasPlay = remember { TrackingPreconditions.playServicesAvailable(context) }
-    // Ночная карта синхронно с темой оболочки: темная → night,
-    // светлая → day, system → за системой. Fallback — FogMask.FORCE_DAY_MAP.
-    val darkTheme = isDarkTheme(
-        paused[PrefsKeys.THEME_MODE] ?: ThemeModes.DEFAULT,
-        isSystemInDarkTheme()
-    )
+    // Ночная карта синхронно с темой оболочки: тёмная → night, светлая → day
+    // (remove-system-theme: системного режима нет). Fallback — FogMask.FORCE_DAY_MAP.
+    val darkTheme = isDarkTheme(paused[PrefsKeys.THEME_MODE] ?: ThemeModes.DEFAULT)
     val useNightMap = darkTheme && !FogMask.FORCE_DAY_MAP
     val veilColor = Color(if (darkTheme) FogMask.VEIL_DARK else FogMask.VEIL_LIGHT)
 

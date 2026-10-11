@@ -1,7 +1,6 @@
 package ru.fogmap.ui.screens
 
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -332,11 +331,10 @@ fun HistoryDetailScreen(nav: NavController, trackId: Long) {
     val points = pointEnts.map { Point(it.lat, it.lon) }
     var renameOpen by remember { mutableStateOf(false) }
     var deleteOpen by remember { mutableStateOf(false) }
-    // Мини-карта трека следует ночному режиму оболочки (4.2).
+    // Мини-карта трека следует теме оболочки (4.2; remove-system-theme: без системного режима).
     val detailPrefs by app.container.dataStore.data.collectAsState(initial = preferencesOf())
     val detailNight = isDarkTheme(
-        detailPrefs[PrefsKeys.THEME_MODE] ?: ThemeModes.DEFAULT,
-        isSystemInDarkTheme()
+        detailPrefs[PrefsKeys.THEME_MODE] ?: ThemeModes.DEFAULT
     ) && !FogMask.FORCE_DAY_MAP
     LaunchedEffect(trackId) {
         val all = app.container.trackRepository.allTracks()

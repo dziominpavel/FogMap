@@ -79,8 +79,7 @@ fun SettingsScreen(nav: NavController) {
                     Spacer(Modifier.height(8.dp))
                     val options = listOf(
                         ThemeModes.DARK to "Тёмная",
-                        ThemeModes.LIGHT to "Светлая",
-                        ThemeModes.SYSTEM to "Система"
+                        ThemeModes.LIGHT to "Светлая"
                     )
                     SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
                         options.forEachIndexed { i, (mode, label) ->
