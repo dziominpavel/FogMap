@@ -61,11 +61,11 @@ class DevLogFile(private val context: Context) {
                 ?.sortedBy { it.name } ?: emptyList()
         }.getOrDefault(emptyList())
 
-    /** Удаляет файлы старше 24 часов. Возвращает число удаленных. */
-    fun cleanupOlderThan24h(nowMs: Long = System.currentTimeMillis()): Int {
+    /** Удаляет файлы старше TTL (7 дней). Возвращает число удаленных. */
+    fun cleanupExpired(nowMs: Long = System.currentTimeMillis()): Int {
         var removed = 0
         for (f in allFiles()) {
-            if (nowMs - f.lastModified() > TTL_MS && f.delete()) removed++
+            if (isExpired(f.lastModified(), nowMs) && f.delete()) removed++
         }
         return removed
     }
@@ -124,6 +124,16 @@ class DevLogFile(private val context: Context) {
 
     companion object {
         const val MAX_FILE_BYTES = 2L * 1024L * 1024L
-        const val TTL_MS = 24L * 60L * 60L * 1000L
+
+        /**
+         * TTL диаг-лога 7 дней (fix-devlog-retention-7d): полевой разбор
+         * «постфактум» требует, чтобы лог вчерашнего/позавчерашнего дня
+         * переживал ночь. Граница объёма: лимит файла × число дней.
+         */
+        const val TTL_MS = 7L * 24L * 60L * 60L * 1000L
+
+        /** Чистый предикат границы TTL: удаляется только строго старше TTL. */
+        fun isExpired(lastModifiedMs: Long, nowMs: Long): Boolean =
+            nowMs - lastModifiedMs > TTL_MS
     }
 }

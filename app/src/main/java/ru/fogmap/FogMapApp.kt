@@ -41,13 +41,13 @@ class FogMapApp : Application() {
         // Без ключа карту не создаем: экраны покажут заглушку (проверено —
         // MapView без ключа роняет процесс AssertionError).
         container = AppContainer(this)
-        // ВРЕМЕННОЕ (dev-logging): старт файлового лога + TTL-чистка 24ч на фоне.
+        // ВРЕМЕННОЕ (dev-logging): старт файлового лога + TTL-чистка 7 дней на фоне.
         // Тумблер DIAG_ENABLED решает, пишется ли новое; старые файлы чистим всегда.
         val devFile = DevLogFile(this)
         devLogFile = devFile
         devFile.start()
         appScope.launch {
-            val removed = runCatching { devFile.cleanupOlderThan24h() }.getOrDefault(0)
+            val removed = runCatching { devFile.cleanupExpired() }.getOrDefault(0)
             val enabled = runCatching {
                 container.dataStore.data.first()[PrefsKeys.DIAG_ENABLED] ?: true
             }.getOrDefault(true)
