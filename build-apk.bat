@@ -77,7 +77,7 @@ if "%MODE%"=="debug" (
 echo === FogMap: building %MODE% (%TASK%) %EXTRA% ===
 if "%RELEASE%"=="1" (
   echo.
-  echo === Phase 1/2: prepare version (release.ps1 -Prepare) ===
+  echo === Phase 1/2: prepare version ^(release.ps1 -Prepare^) ===
   rem Version must be bumped BEFORE Gradle runs: versionName/versionCode are
   rem baked into the APK at build time. Bumping after the build would tag
   rem vX.Y.Z with an APK carrying the previous version inside.
