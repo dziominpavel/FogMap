@@ -37,7 +37,7 @@ param(
     [switch]$Major
 )
 
-$SCRIPT_VERSION = "1.4.1"
+$SCRIPT_VERSION = "1.4.2"
 Write-Host "release.ps1 v$SCRIPT_VERSION"
 
 function Fail([string]$Message) {
@@ -396,7 +396,7 @@ if ($Assets.Count -eq 0) {
 # пользователь получил бы прошлую сборку под именем свежей. Версия в имени
 # есть не у всех ассетов (FogMap-release-latest.apk) — запрещается только чужая.
 $staleAssets = @($Assets | Where-Object {
-    $found = @([regex]::Matches($_.Name, '(?<![\d.])\d+\.\d+\.\d+(?![\d.])') | ForEach-Object { $_.Value })
+    $found = @([regex]::Matches($_.Name, '(?<![\d.])\d+\.\d+\.\d+(?!\d)') | ForEach-Object { $_.Value })
     $found.Count -gt 0 -and $found -notcontains $Version
 })
 if ($staleAssets.Count -gt 0) {
