@@ -67,11 +67,13 @@ class TrackingService : LifecycleService() {
     private val flushMutex = Mutex()
     /** Дата текущего суток-чанка (trust-v2 3.1): полночь режет чанк. */
     private var chunkDate: java.time.LocalDate = java.time.LocalDate.now()
-    /** Момент последней доставки Fused (любой, даже отброшенной). */
-    private var lastFixTime: Long = System.currentTimeMillis()
     /** Кэш флага паузы (gps-trust-filter): вердикт и запись — синхронно в колбэке. */
     @Volatile
     private var pausedCached: Boolean = false
+    /** Поток heartbeat канала LIFE (fix-track-gap-visibility 1.4). */
+    @Volatile
+    private var heartbeatRunning: Boolean = false
+    private var heartbeatThread: Thread? = null
     /** Эко-режим (eco-always-on): всегда включен, флага и тумблеров нет. */
     @Volatile
     private var ecoCached: Boolean = true
@@ -157,6 +159,12 @@ class TrackingService : LifecycleService() {
         }
         // ВРЕМЕННОЕ (dev-logging): старт сервиса.
         DevLog.i("TRACK", "service_start", mapOf("mode" to ecoModeTag()))
+        // Канал жизни процесса (fix-track-gap-visibility 1.2/1.4): база для
+        // `freeze_gap` и heartbeat отдельным потоком. Поток не зависит от
+        // flush-цикла: его молчание означает «процесс не планируется», а
+        // молчание только flush-цикла видно как freeze_gap при живом heartbeat.
+        TrackingLife.onServiceStart()
+        startHeartbeat()
         lifecycleScope.launch {
             val container = (application as FogMapApp).container
             // Подписка на паузу: при включенной паузе точки не пишем.
@@ -220,7 +228,6 @@ class TrackingService : LifecycleService() {
     }
 
     private fun onRawLocation(loc: Location) {
-        lastFixTime = System.currentTimeMillis()
         @Suppress("DEPRECATION")
         val isMock = if (Build.VERSION.SDK_INT >= 31) loc.isMock else loc.isFromMockProvider
         val accOrDef = if (loc.hasAccuracy()) loc.accuracy else -1f
@@ -474,6 +481,10 @@ class TrackingService : LifecycleService() {
         runCatching {
             val today = java.time.LocalDate.now()
             if (today != chunkDate) {
+                // Закрытие дня (fix-track-gap-visibility 4.4): дневные счётчики
+                // пишутся в лог ДО переключения чанка, пока trackId и counters
+                // еще принадлежат закрываемому дню.
+                logDayStats(chunkDate, trackId, via = "date_change")
                 trackId = container.trackRepository.openDayChunk(today)
                 chunkDate = today
                 runCatching { container.fogRepository.recordBranches(emptyMap(), today) }
@@ -500,10 +511,16 @@ class TrackingService : LifecycleService() {
             )
         }
         // GPS-время профиля с прошлого flush (battery-eco 1.3): весь интервал
-        // сервис держал текущий профиль подписки.
+        // сервис держал текущий профиль подписки. Необрезанный интервал — это
+        // еще и метрика отставания цикла (fix-track-gap-visibility 4.2) и вход
+        // для подсчета тишины (2.1).
         val nowWall = System.currentTimeMillis()
-        val gpsMs = (nowWall - lastFlushWallMs).coerceIn(0L, FLUSH_INTERVAL_MS * 2)
+        val sinceLastMs = (nowWall - lastFlushWallMs).coerceAtLeast(0L)
+        val gpsMs = sinceLastMs.coerceIn(0L, FLUSH_INTERVAL_MS * 2)
         lastFlushWallMs = nowWall
+        // Канал жизни (1.5): тик записи отмечается на каждой итерации, включая
+        // пустую; разрыв сверх порога даст LIFE/freeze_gap.
+        TrackingLife.onFlushTick()
         // suspend-вызовы — строго вне synchronized (иначе critical section).
         val ecoSnapshot: Map<String, Long> = synchronized(buffer) {
             val m = HashMap<String, Long>()
@@ -530,15 +547,16 @@ class TrackingService : LifecycleService() {
         val starved: Boolean = synchronized(buffer) {
             buffer.isEmpty() && rejected.isEmpty() && rawBuffer.isEmpty()
         }
+        // Тишина Fused (fix-track-gap-visibility 2.1): интервал считается по
+        // времени последнего подтвержденного тика записи, а не по пустоте
+        // буфера. После разморозки пачка фиксов приходит разом и раньше
+        // маскировала дыру 226 минут: вызов жил только в ветке starved.
+        checkSilence(sinceLastMs)
         // Эко/ветки сливаем даже в starved (нули веток видимы всегда, 6.2).
         if (starved) {
             runCatching { container.fogRepository.recordEco(ecoSnapshot) }
             runCatching { container.fogRepository.recordBranches(branchSnapshot, chunkDate) }
-            DevLog.i(
-                "TRACK", "day_branches",
-                EcoLogPayload.branchPayload(branchSnapshot)
-            )
-            flushIfStarved()
+            logBranches(branchSnapshot)
             return
         }
         val batch: List<RawPoint> = synchronized(buffer) {
@@ -662,7 +680,9 @@ class TrackingService : LifecycleService() {
                     txnMs = txnStr, newCells = newCells,
                     mode = mode, profile = ecoProfile.name,
                     ecoFix = payloadFix, ecoStand = payloadStand, ecoGpsMs = payloadGpsMs,
-                    prefixM = prefixM, prefixSrc = prefixSrc
+                    prefixM = prefixM, prefixSrc = prefixSrc,
+                    sinceLastMs = sinceLastMs,
+                    bootMonoMs = DevLog.bootMonoMs()
                 )
             )
         } else {
@@ -673,16 +693,26 @@ class TrackingService : LifecycleService() {
                     txnMs = txnStr, newCells = newCells,
                     mode = mode, profile = ecoProfile.name,
                     ecoFix = payloadFix, ecoStand = payloadStand, ecoGpsMs = payloadGpsMs,
-                    prefixM = prefixM, prefixSrc = prefixSrc
+                    prefixM = prefixM, prefixSrc = prefixSrc,
+                    sinceLastMs = sinceLastMs,
+                    bootMonoMs = DevLog.bootMonoMs()
                 )
             )
         }
         if (branchSnapshot.isNotEmpty()) {
-            DevLog.i(
-                "TRACK", "day_branches",
-                EcoLogPayload.branchPayload(branchSnapshot)
-            )
+            logBranches(branchSnapshot)
         }
+    }
+
+    /**
+     * Лог счётчиков веток (fix-track-gap-visibility 4.1): только когда счётчики
+     * дня изменились, то есть пачка не пуста. Пустой тик — 58 % файла 21.10;
+     * полнота в `counters.json` от гейта не зависит: `recordBranches` с нулями
+     * вызывается всегда, включая ветку starved.
+     */
+    private fun logBranches(counts: Map<String, Long>) {
+        if (!BranchLogGate.changed(counts)) return
+        DevLog.i("TRACK", "day_branches", EcoLogPayload.branchPayload(counts))
     }
 
     /**
@@ -701,20 +731,17 @@ class TrackingService : LifecycleService() {
     }
 
     /**
-     * Тишина Fused (tracking-reliability 3.1, причина no-fix): доставок нет дольше
-     * порога при выключенной паузе — фиксируем интервал без фиксов, чтобы дыра
-     * была объяснена, а не пустой. Вызывается только когда писать нечего.
+     * Тишина Fused (fix-track-gap-visibility 2.1/2.2): разрыв считается от
+     * времени последнего подтвержденного тика записи, а не от пустоты буфера.
+     * Заморозка процесса или убитый flush-цикл видны как тишина, даже если
+     * после разморозки пришел пакет фиксов. Один интервал = один счетчик:
+     * следующий тик перезаписывает [lastFlushWallMs], повторного счета нет.
      */
-    private suspend fun flushIfStarved() {
-        val gapMs = System.currentTimeMillis() - lastFixTime
-        if (gapMs < NO_FIX_GAP_MS) return
+    private suspend fun checkSilence(gapMs: Long) {
+        // pausedCached обновляется подпиской на DataStore в onCreate; к первому
+        // тику (через 15 с) он уже заполнен, suspend-чтение здесь не нужно.
+        if (!SilenceGap.shouldReport(gapMs, pausedCached, canTrack(this))) return
         val container = (application as FogMapApp).container
-        val paused = runCatching {
-            container.dataStore.data.first()[PrefsKeys.PAUSED] ?: false
-        }.getOrDefault(false)
-        if (paused || !canTrack(this)) return
-        // Дроссель: не чаще одного no-fix за порог (сдвигаем метку).
-        lastFixTime = System.currentTimeMillis()
         runCatching {
             container.fogRepository.recordRejected(mapOf(FogRepository.REJECT_NO_FIX to 1))
         }
@@ -724,6 +751,65 @@ class TrackingService : LifecycleService() {
             "TRACK", "no_fix",
             EcoLogPayload.noFixPayload(gapMs, ecoModeTag(), ecoProfile.name)
         )
+    }
+
+    /**
+     * Дневные счётчики в лог (fix-track-gap-visibility 4.4): источник тот же,
+     * что у `counters.json` — таблица counters (ключи `*_day_<date>`); число
+     * точек — из строки дня (`tracks.pointsCount`), в counters его нет.
+     */
+    private suspend fun logDayStats(date: java.time.LocalDate, trackId: Long, via: String) {
+        val container = (application as FogMapApp).container
+        val all = runCatching {
+            container.db.counterDao().all().associate { it.key to it.value }
+        }.getOrNull() ?: return
+        val stats = FogRepository.dayCounters(all, date)
+        val points = runCatching {
+            container.db.trackDao().trackById(trackId)?.pointsCount ?: 0
+        }.getOrDefault(0)
+        DevLog.i(
+            "TRACK", "day_stats",
+            EcoLogPayload.dayStatsPayload(
+                date = date.toString(),
+                distCm = stats.distCm,
+                timeS = stats.timeS,
+                points = points,
+                areaCells = stats.areaCells,
+                flush = stats.flush,
+                rejected = stats.rejected,
+                via = via
+            )
+        )
+    }
+
+    /**
+     * Heartbeat канала LIFE (fix-track-gap-visibility 1.4): отдельный поток,
+     * а не flush-цикл. Пока процесс планируется, событие идет каждые 5 минут
+     * (в Doze система может задержать поток — фактический интервал виден по
+     * `since_last_heartbeat_ms`). Если цикл записи при этом молчит, поток
+     * фиксирует `freeze_gap` со стороны heartbeat.
+     */
+    private fun startHeartbeat() {
+        if (heartbeatRunning) return
+        heartbeatRunning = true
+        heartbeatThread = Thread({
+            while (heartbeatRunning) {
+                try {
+                    Thread.sleep(TrackingLife.HEARTBEAT_INTERVAL_MS)
+                } catch (_: InterruptedException) {
+                    break
+                }
+                if (!heartbeatRunning) break
+                runCatching { TrackingLife.heartbeat("thread") }
+                runCatching { TrackingLife.checkFlushSilence() }
+            }
+        }, "TrackingHeartbeat").apply { isDaemon = true; start() }
+    }
+
+    private fun stopHeartbeat() {
+        heartbeatRunning = false
+        heartbeatThread?.interrupt()
+        heartbeatThread = null
     }
 
     /**
@@ -737,6 +823,15 @@ class TrackingService : LifecycleService() {
         runCatching {
             kotlinx.coroutines.runBlocking {
                 kotlinx.coroutines.withTimeoutOrNull(3000L) { flush() }
+            }
+        }
+        // Закрытие дня при остановке сервиса (fix-track-gap-visibility 4.4):
+        // дневные счётчики в лог, пока строка дня еще текущая.
+        runCatching {
+            kotlinx.coroutines.runBlocking {
+                kotlinx.coroutines.withTimeoutOrNull(1500L) {
+                    logDayStats(chunkDate, trackId, via = "service_stop")
+                }
             }
         }
     }
@@ -1064,6 +1159,7 @@ class TrackingService : LifecycleService() {
     override fun onDestroy() {
         // ВРЕМЕННОЕ (dev-logging): остановка сервиса.
         DevLog.i("TRACK", "service_stop", mapOf("mode" to ecoModeTag(), "profile" to ecoProfile.name))
+        stopHeartbeat()
         stopMotionWake()
         stopWifiWake()
         runCatching {
@@ -1071,6 +1167,8 @@ class TrackingService : LifecycleService() {
                 .removeLocationUpdates(callback)
         }
         flushBlocking()
+        // Метка жизни на диск: разрыв до следующего proc_start будет точным.
+        TrackingLife.flushMarker()
         flushJob?.cancel()
         super.onDestroy()
     }
@@ -1121,7 +1219,7 @@ class TrackingService : LifecycleService() {
         const val FLUSH_INTERVAL_MS = 15_000L
         const val FLUSH_SIZE = 20
         /** Тишина Fused дольше порога = интервал no-fix (tracking-reliability 3.1). */
-        const val NO_FIX_GAP_MS = 5 * 60_000L
+        const val NO_FIX_GAP_MS = SilenceGap.THRESHOLD_MS
 
         /** Трекинг разрешен, только когда есть гео-разрешение (spec: «когда разрешено»). */
         fun canTrack(context: Context): Boolean =

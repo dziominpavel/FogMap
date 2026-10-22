@@ -131,9 +131,11 @@ class FogRepository(
             // движение, площадь — только по подтвержденным (шаг 2).
             val counters = db.counterDao()
             val distCm = (distance * 100).toLong()
-            val timeS = if (moving.size > 1) {
-                (moving.last().time - moving.first().time) / 1000
-            } else 0
+            // Время дня (fix-track-gap-visibility 3.1): сумма непрерывных
+            // отрезков, а не «последняя минус первая». Разрыв доставки в 40
+            // минут больше не превращается во время движения (10.04: 18 647 с
+            // при 325 м). Порог тот же, что у rebuild — [TrackChunking].
+            val timeS = TrackChunking.totalSpanMs(moving.map { it.time }) / 1000
             for (suffix in rangeSuffixesFor(date)) {
                 if (newBase > 0) counters.addOrInsert("area_cells_$suffix", newBase.toLong())
                 if (distCm > 0) counters.addOrInsert("distance_cm_$suffix", distCm)
@@ -501,6 +503,32 @@ class FogRepository(
             val week = date.get(WeekFields.of(Locale.getDefault()).weekOfYear()).toString() +
                 "-" + date.year.toString()
             return listOf("all", "day_$day", "week_$week")
+        }
+
+        /**
+         * Дневной срез счётчиков для `TRACK/day_stats` (fix-track-gap-visibility
+         * 4.4): ровно тот же ключ, что в `counters.json` — `*_day_<date>`.
+         * Чистая: расхождений с выгрузкой нет по построению (один источник
+         * схемы ключей), тестируется без БД.
+         */
+        data class DayCounters(
+            val distCm: Long,
+            val timeS: Long,
+            val areaCells: Long,
+            val flush: Long,
+            val rejected: Map<String, Long>
+        )
+
+        fun dayCounters(all: Map<String, Long>, date: LocalDate): DayCounters {
+            val day = "day_$date"
+            fun get(prefix: String): Long = all["${prefix}_$day"] ?: 0L
+            return DayCounters(
+                distCm = get("distance_cm"),
+                timeS = get("time_s"),
+                areaCells = get("area_cells"),
+                flush = get("$ECO_KEY_PREFIX$ECO_FLUSH"),
+                rejected = REJECT_REASONS.associateWith { get("rejected_$it") }
+            )
         }
 
         /**

@@ -32,6 +32,8 @@ object PrefsKeys {
     val ANCHOR_TIME = longPreferencesKey("standby_anchor_time")
     /** Границы регионов на карте (add-region-borders): default false. */
     val REGION_BORDERS = booleanPreferencesKey("region_borders")
+    /** POST_NOTIFICATIONS уже спрашивали (fix-track-gap-visibility 5.5): не повторяем. */
+    val NOTIF_ASKED = booleanPreferencesKey("notif_asked")
 }
 
 object ThemeModes {
@@ -114,6 +116,9 @@ class SettingsRepository(
 
     /** Границы регионов на карте (add-region-borders): слой отрисовки вкл/выкл. */
     suspend fun setRegionBorders(v: Boolean) { store.edit { it[PrefsKeys.REGION_BORDERS] = v } }
+
+    /** Разрешение на уведомления уже спрашивали (5.5): повторно не спрашиваем. */
+    suspend fun setNotifAsked() { store.edit { it[PrefsKeys.NOTIF_ASKED] = true } }
 
     suspend fun resetAll(fog: FogRepository) = fog.clearAll()
 }

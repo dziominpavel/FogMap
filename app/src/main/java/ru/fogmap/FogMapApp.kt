@@ -11,6 +11,7 @@ import ru.fogmap.data.AppContainer
 import ru.fogmap.data.PrefsKeys
 import ru.fogmap.diag.DevLog
 import ru.fogmap.diag.DevLogFile
+import ru.fogmap.tracking.TrackingLife
 import ru.fogmap.tracking.TrackingWatchdog
 
 class FogMapApp : Application() {
@@ -46,6 +47,10 @@ class FogMapApp : Application() {
         val devFile = DevLogFile(this)
         devLogFile = devFile
         devFile.start()
+        // Канал жизни процесса (fix-track-gap-visibility 1.3): `proc_start` —
+        // первое событие процесса, до любых других записей. Метка прошлой
+        // сессии переживает убийство процесса, поэтому разрыв виден числом.
+        runCatching { TrackingLife.onProcessStart(this) }
         appScope.launch {
             val removed = runCatching { devFile.cleanupExpired() }.getOrDefault(0)
             val enabled = runCatching {

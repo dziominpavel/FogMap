@@ -113,4 +113,41 @@ class DevLogTest {
         // Числа — всегда с точкой, независимо от локали устройства.
         assertTrue(DevLog.buildPayloadJson(mapOf("gap_ms" to 720000.5)).contains(":720000.5"))
     }
+
+    /**
+     * fix-track-gap-visibility 1.1: события `LIFE` несут абсолютное
+     * `boot_mono_ms` — шкалу, сравнимую между сессиями, — а `ts_mono` остается
+     * временем от старта процесса. Формат строки не меняется (те же 8 полей).
+     */
+    @Test
+    fun `LIFE несет boot_mono_ms а ts_mono остается от старта процесса`() {
+        var mono = 1_234_000L
+        DevLog.monoClock = { mono }
+        DevLog.i(DevLog.TAG_LIFE, "proc_start", mapOf("gap_ms" to 600_000L))
+        val first = DevLog.parse(DevLog.snapshot().last())!!
+        mono = 1_534_000L
+        DevLog.i(DevLog.TAG_LIFE, "heartbeat", mapOf("via" to "thread"))
+        val second = DevLog.parse(DevLog.snapshot().last())!!
+
+        val boot1 = longField(first.payloadJson, DevLog.KEY_BOOT_MONO_MS)
+        val boot2 = longField(second.payloadJson, DevLog.KEY_BOOT_MONO_MS)
+        assertEquals(1_234_000L, boot1)
+        assertEquals(1_534_000L, boot2)
+        assertTrue("boot_mono не убывает", boot2 > boot1)
+        // ts_mono по-прежнему относительный: смещение до boot_mono одно на процесс.
+        assertEquals(boot1 - first.tsMono, boot2 - second.tsMono)
+        assertEquals(first.tsMono + 300_000L, second.tsMono)
+        assertEquals(8, DevLog.snapshot().last().split('|', limit = 8).size)
+    }
+
+    /** Абсолютная шкала — только у `LIFE`: обычные события не пухнут. */
+    @Test
+    fun `boot_mono_ms не попадает в обычные события`() {
+        DevLog.i("TRACK", "flush", mapOf("batch" to 1))
+        val e = DevLog.parse(DevLog.snapshot().last())!!
+        assertTrue(!e.payloadJson.contains(DevLog.KEY_BOOT_MONO_MS))
+    }
+
+    private fun longField(json: String, key: String): Long =
+        Regex("\"$key\":(\\d+)").find(json)!!.groupValues[1].toLong()
 }

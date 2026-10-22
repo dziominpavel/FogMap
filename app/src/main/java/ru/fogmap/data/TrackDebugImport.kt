@@ -249,32 +249,20 @@ object TrackDebugImport {
      * Чанки rebuild (fix-import-metrics 2.1): не больше [maxCount] точек и не
      * больше [maxSpanMs] спана. Разрыв режет чанк: иначе `time_s` дня впитывает
      * тишину (21.09 чанк через дыру 09:16→12:25 вносил сразу 3 часа).
+     * Правило живёт в [TrackChunking] — общий источник с живой записью
+     * (fix-track-gap-visibility 3.3), иначе live и rebuild расходятся.
      */
     internal fun chunkAccepted(
         points: List<RawPoint>,
         maxCount: Int = REBUILD_CHUNK,
         maxSpanMs: Long = REBUILD_SPAN_MS
-    ): List<List<RawPoint>> {
-        val out = ArrayList<List<RawPoint>>()
-        var cur = ArrayList<RawPoint>()
-        for (p in points) {
-            if (cur.isNotEmpty() &&
-                (cur.size >= maxCount || p.time - cur.first().time > maxSpanMs)
-            ) {
-                out.add(cur)
-                cur = ArrayList()
-            }
-            cur.add(p)
-        }
-        if (cur.isNotEmpty()) out.add(cur)
-        return out
-    }
+    ): List<List<RawPoint>> = TrackChunking.chunks(points, maxCount, maxSpanMs)
 
     /**
      * Чанк rebuild (track-fix 19.09): того же порядка, что живой
      * flush (FLUSH_SIZE=20), чтобы ворота C видели весь хвост.
      */
-    const val REBUILD_CHUNK = 20
+    const val REBUILD_CHUNK = TrackChunking.MAX_COUNT
     /** Максимальный спан чанка rebuild (fix-import-metrics 2.1), мс. */
-    const val REBUILD_SPAN_MS = 120_000L
+    const val REBUILD_SPAN_MS = TrackChunking.MAX_SPAN_MS
 }

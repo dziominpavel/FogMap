@@ -136,6 +136,10 @@ interface TrackDao {
     @Query("SELECT * FROM track_points WHERE trackId = :trackId ORDER BY time DESC, id DESC LIMIT 1")
     suspend fun lastPoint(trackId: Long): TrackPointEntity?
 
+    /** Время самой свежей точки всех треков (fix-track-gap-visibility 5.1). */
+    @Query("SELECT MAX(time) FROM track_points")
+    suspend fun lastPointTime(): Long?
+
     @Query("SELECT * FROM tracks WHERE id = :id")
     suspend fun trackById(id: Long): TrackEntity?
 

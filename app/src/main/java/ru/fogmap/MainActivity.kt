@@ -12,6 +12,7 @@ import androidx.navigation.compose.rememberNavController
 import com.yandex.mapkit.MapKitFactory
 import ru.fogmap.data.ThemeModes
 import ru.fogmap.ui.screens.AchievementsScreen
+import ru.fogmap.ui.screens.BgHealthScreen
 import ru.fogmap.ui.screens.DiagDiagnosticsScreen
 import ru.fogmap.ui.screens.HistoryDetailScreen
 import ru.fogmap.ui.screens.HistoryScreen
@@ -60,6 +61,9 @@ fun FogMapNav() {
             HistoryDetailScreen(nav, backStack.arguments?.getString("id")?.toLongOrNull() ?: -1)
         }
         composable("settings") { SettingsScreen(nav) }
+        // Проверка фоновой записи (fix-track-gap-visibility 5.1): измеряет
+        // состояние и показывает причины, а не инструкции.
+        composable("bg-health") { BgHealthScreen(nav) }
         composable("onboarding") { OnboardingScreen(nav) }
         // ВРЕМЕННОЕ (dev-logging): экран диагностики, удалить вместе с change.
         composable("diagnostics") { DiagDiagnosticsScreen(nav) }

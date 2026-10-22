@@ -22,6 +22,10 @@ class WatchdogAlarmReceiver : BroadcastReceiver() {
         val pending = goAsync()
         CoroutineScope(Dispatchers.Default).launch {
             try {
+                // Heartbeat из alarm-канала (fix-track-gap-visibility 1.4): не
+                // зависит от flush-цикла, поэтому его молчание — отдельный
+                // симптом (OEM приостановил будильники), а не та же дыра.
+                runCatching { TrackingLife.heartbeat("alarm") }
                 TrackingWatchdog.checkAndStart(appContext, source = "alarm")
             } finally {
                 runCatching { TrackingWatchdog.scheduleAlarm(appContext) }

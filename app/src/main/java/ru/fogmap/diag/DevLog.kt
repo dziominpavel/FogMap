@@ -20,6 +20,18 @@ object DevLog {
     const val TAIL_MAX = 50
     const val LOGCAT_PREFIX = "FogMap"
 
+    /**
+     * Тег жизни процесса (fix-track-gap-visibility 1.1): отдельный логический
+     * поток, который пишется и до, и после разрыва записи.
+     */
+    const val TAG_LIFE = "LIFE"
+
+    /**
+     * Абсолютное монотонное время с загрузки устройства, мс. В отличие от
+     * `ts_mono` (отсчет от первого события процесса) сравнимо между сессиями.
+     */
+    const val KEY_BOOT_MONO_MS = "boot_mono_ms"
+
     enum class Level { D, I, W, E }
 
     data class Event(
@@ -66,10 +78,18 @@ object DevLog {
 
     fun log(tag: String, level: Level, msg: String, payload: Map<String, Any?> = emptyMap()) {
         if (!enabled) return
-        val payloadJson = buildPayloadJson(payload)
+        // Одно чтение моно-часов на событие: ts_mono и boot_mono_ms описывают
+        // один и тот же момент, иначе тест/парсер расходятся на миллисекунды.
+        val nowMono = monoClock()
+        // LIFE всегда несет абсолютную шкалу (fix-track-gap-visibility 1.1);
+        // значение инжектится последним и не может быть подменено вызывающим.
+        val fullPayload = if (tag == TAG_LIFE) {
+            payload + (KEY_BOOT_MONO_MS to nowMono)
+        } else payload
+        val payloadJson = buildPayloadJson(fullPayload)
         val e = Event(
             tsWall = wallClock(),
-            tsMono = monoClock() - startMono,
+            tsMono = nowMono - startMono,
             session = session,
             seq = seqCounter.incrementAndGet(),
             tag = tag,
@@ -100,6 +120,12 @@ object DevLog {
         log(tag, Level.E, msg, payload)
 
     fun queueDepth(): Int = runCatching { queueDepthProvider() }.getOrDefault(0)
+
+    /**
+     * Абсолютное монотонное время загрузки (fix-track-gap-visibility): та же
+     * шкала, что в `boot_mono_ms` событий `LIFE`. Не зависит от старта процесса.
+     */
+    fun bootMonoMs(): Long = monoClock()
 
     fun snapshot(): List<String> = synchronized(ring) { ring.toList() }
 

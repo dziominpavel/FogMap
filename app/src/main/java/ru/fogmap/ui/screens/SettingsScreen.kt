@@ -145,6 +145,21 @@ fun SettingsScreen(nav: NavController) {
                     )
                 }
             }
+            // --- Фоновая запись (fix-track-gap-visibility 5.1): проверка состояния ---
+            Text("Фоновая запись", style = MaterialTheme.typography.titleMedium)
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Проверка записи в фоне", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "Покажет, идёт ли запись сейчас, и что именно мешает ей в фоне",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(onClick = { nav.navigate("bg-health") }) {
+                        Text("Проверить")
+                    }
+                }
+            }
             // --- Диагностика (ВРЕМЕННОЕ, dev-logging: удалить вместе с change) ---
             Text("Диагностика (временно)", style = MaterialTheme.typography.titleMedium)
             Card(Modifier.fillMaxWidth()) {

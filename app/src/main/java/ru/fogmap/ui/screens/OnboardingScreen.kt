@@ -23,6 +23,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -33,11 +35,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import androidx.datastore.preferences.core.preferencesOf
 import androidx.navigation.NavController
 import kotlinx.coroutines.launch
 import ru.fogmap.FogMapApp
 import ru.fogmap.R
+import ru.fogmap.data.PrefsKeys
 import ru.fogmap.tracking.TrackingService
+import ru.fogmap.ui.NotifPermission
 
 /**
  * Онбординг разрешений (ui-dark-redesign 3.4):
@@ -57,12 +62,27 @@ fun OnboardingScreen(nav: NavController) {
     val bgLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { step = 2 }
+    val prefs by app.container.dataStore.data.collectAsState(initial = preferencesOf())
+    val notifLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* Отказ не мешает записи: трекер работает и без FGS-уведомления. */ }
+
+    // Разрешение на уведомление (fix-track-gap-visibility 5.5): спрашиваем ОДИН
+    // раз, на шаге батареи и до старта трекинга; факт запроса сохраняется.
+    LaunchedEffect(step) {
+        val asked = prefs[PrefsKeys.NOTIF_ASKED] ?: false
+        val granted = NotifPermission.granted(context)
+        if (step == 2 && NotifPermission.shouldAsk(Build.VERSION.SDK_INT, granted, asked)) {
+            app.container.settingsRepository.setNotifAsked()
+            notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
 
     val titles = listOf("Точная геолокация", "Фоновая геолокация", "Батарея и автозапуск")
     val bodies = listOf(
         "Нужна, чтобы открывать туман по вашим прогулкам",
         "Нужна, чтобы трек писался в фоне",
-        "Отключите оптимизацию батареи и разрешите автозапуск (Xiaomi/Huawei), иначе система будет убивать трекинг. В покое трекер спит и просыпается от шагов, выхода из WiFi или движения — отдельных разрешений для этого не нужно, без WiFi будят шаги и GPS"
+        "Отключите оптимизацию батареи и разрешите автозапуск (Xiaomi/Huawei), иначе система будет убивать трекинг. В покое трекер спит и просыпается от шагов, выхода из WiFi или движения — отдельных разрешений для этого не нужно, без WiFi будят шаги и GPS. Сейчас система спросит разрешение на уведомление: по нему видно, что запись идёт (без него трекер тоже работает)"
     )
     val illustrations = listOf(
         R.drawable.img_onboarding_geo,

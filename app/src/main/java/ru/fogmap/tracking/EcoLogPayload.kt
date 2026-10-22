@@ -33,6 +33,19 @@ object EcoLogPayload {
     const val KEY_GAP_MS = "gap_ms"
     /** Окно BURST wifi/motion, мс (fix-walk-fog-verdict 5.3: 180_000). */
     const val KEY_BURST_WINDOW_MS = "burst_window_ms"
+    /** Время с прошлого тика записи (fix-track-gap-visibility 4.2), мс. */
+    const val KEY_SINCE_LAST_MS = "since_last_ms"
+    /** Абсолютная монотонная шкала загрузки (fix-track-gap-visibility 4.2). */
+    const val KEY_BOOT_MONO_MS = "boot_mono_ms"
+    /** Дневные счётчики (fix-track-gap-visibility 4.4). */
+    const val KEY_DATE = "date"
+    const val KEY_DIST_CM = "dist_cm"
+    const val KEY_TIME_S = "time_s"
+    const val KEY_POINTS = "points"
+    const val KEY_AREA_CELLS = "area_cells"
+    const val KEY_FLUSH_COUNT = "flush"
+    const val KEY_VIA = "via"
+    const val REJ_PREFIX = "rej_"
 
     /** Нет якоря / неприменимо (wake_m): число, а не null — парсер проще. */
     const val NO_ANCHOR_M = -1L
@@ -48,7 +61,9 @@ object EcoLogPayload {
         ecoStand: Long,
         ecoGpsMs: Long,
         prefixM: Long? = null,
-        prefixSrc: String? = null
+        prefixSrc: String? = null,
+        sinceLastMs: Long? = null,
+        bootMonoMs: Long? = null
     ): Map<String, Any?> = mapOf(
         KEY_BATCH to batch,
         KEY_REJECTED to rejected,
@@ -60,8 +75,35 @@ object EcoLogPayload {
         KEY_ECO_STAND to ecoStand,
         KEY_ECO_GPS_MS to ecoGpsMs,
         KEY_PREFIX_M to prefixM,
-        KEY_PREFIX_SRC to prefixSrc
+        KEY_PREFIX_SRC to prefixSrc,
+        KEY_SINCE_LAST_MS to sinceLastMs,
+        KEY_BOOT_MONO_MS to bootMonoMs
     )
+
+    /**
+     * Дневные счётчики (fix-track-gap-visibility 4.4): дистанция/время/площадь/
+     * flush/отбросы — из таблицы counters (тот же ключ, что `counters.json`),
+     * точки — из строки дня. По логу за неделю видно, какие дни были пустыми.
+     */
+    fun dayStatsPayload(
+        date: String,
+        distCm: Long,
+        timeS: Long,
+        points: Int,
+        areaCells: Long,
+        flush: Long,
+        rejected: Map<String, Long>,
+        via: String? = null
+    ): Map<String, Any?> = buildMap {
+        put(KEY_DATE, date)
+        put(KEY_DIST_CM, distCm)
+        put(KEY_TIME_S, timeS)
+        put(KEY_POINTS, points)
+        put(KEY_AREA_CELLS, areaCells)
+        put(KEY_FLUSH_COUNT, flush)
+        for ((reason, n) in rejected) put(REJ_PREFIX + reason.replace('-', '_'), n)
+        if (via != null) put(KEY_VIA, via)
+    }
 
     /** Тишина Fused (fix-eco-signal-loss 3.1): фактическая длительность, не порог. */
     fun noFixPayload(gapMs: Long, mode: String, profile: String): Map<String, Any?> = mapOf(

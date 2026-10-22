@@ -189,11 +189,15 @@ object DevPerfMonitor {
             if (!running) return
             if (lastFrameNanos != 0L) {
                 val deltaMs = (frameTimeNanos - lastFrameNanos) / 1e6
-                if (deltaMs > 700.0) {
+                // Короткая задержка кадра и длительная остановка — разные
+                // события (fix-track-gap-visibility 4.3).
+                val event = PerfThresholds.eventFor(deltaMs.toLong())
+                if (event != null) {
                     DevLog.w(
-                        "PERF", "jank",
+                        "PERF", event,
                         mapOf(
-                            "gap_ms" to String.format(Locale.US, "%.0f", deltaMs),
+                            "gap_ms" to deltaMs.toLong(),
+                            "via" to "frame",
                             "cells" to cellsCount,
                             "log_queue" to DevLog.queueDepth()
                         )
@@ -256,9 +260,14 @@ object DevPerfMonitor {
                 if (!running) break
                 val silentMs = System.currentTimeMillis() - uiTick
                 if (silentMs > 5000L) {
+                    // 5–60 с — задержка отклика (jank), от минуты — stall.
                     DevLog.w(
-                        "PERF", "anr_watchdog",
-                        mapOf("ui_silent_ms" to silentMs, "cells" to cellsCount)
+                        "PERF", PerfThresholds.eventFor(silentMs) ?: "jank",
+                        mapOf(
+                            "ui_silent_ms" to silentMs,
+                            "via" to "watchdog",
+                            "cells" to cellsCount
+                        )
                     )
                 }
             }
