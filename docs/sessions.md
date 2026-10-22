@@ -24,6 +24,7 @@
 - **Разбор логов (6.1–6.3)**: `scripts/analyze-devlog.py` (stdlib) — сессии, абсолютная шкала, разрывы с атрибуцией, ритм каналов, `no_fix`, дни без записи, доля шума. Проверен на полевых логах 19/21/22.10: дыра 226 мин и отсутствие 20.10 видны; на синтетическом логе нового формата проверены `proc_start`/`heartbeat`/`freeze_gap`/`exit_reason` и откат порядка при перезагрузке. Описание — `docs/dev-logging.md`.
 - Тесты: `:app:compileDebugKotlin` и `:app:testDebugUnitTest` зелёные — 290 тестов, 0 падений (39 классов); новые `TrackingLifeTest` 10, `SilenceGapTest` 4, `TrackChunkingTest` 7, `BranchLogGateTest` 4, `PerfEventTest` 4, `DayStatsPayloadTest` 6, `BgHealthTest` 10, `NotifPermissionTest` 3, `BgHealthIntentsTest` 4, `DevLogTest` +2.
 - **Архивация**: 2026-10-22 change `fix-track-gap-visibility` синхронизирован в основные спеки (`app-shell` +3, `dev-logging` +5, `tracking-reliability` +3, `tracking` MODIFIED: предложение о времени дня + 2 сценария; `openspec validate --specs` — 15/15) и перемещён в `openspec/changes/archive/2026-10-22-fix-track-gap-visibility`. Владелец разрешил архив до полевого прогона: 7.1–7.5 остались открытыми.
+- **Релиз 1.7.0 (MINOR)**: `build-apk.bat release` — Prepare (1.6.2 → 1.7.0), сборка APK `1.7.0.69-g7eb5e22-dirty` (64 566 188 байт), публикация GitHub Release `v1.7.0` с одним ассетом `FogMap-1.7.0.apk`; ветка `main` и тег запушены release-скриптом. Личные логи/скриншоты/`track-debug` из корня `dist/` заранее убраны в `dist/private/` и в релиз не попали.
 
 Что решили:
 - Наблюдаемость строится на одном канале `LIFE` с абсолютной шкалой `boot_mono_ms`: `ts_mono` остается относительным (совместимость парсеров), а `boot_mono_ms` дает сравнение между сессиями; `boot_mono_ms - ts_mono` = старт процесса на шкале загрузки (см. `decisions.md`).
@@ -33,11 +34,11 @@
 - Архивация change — не релиз APK: бамп версии не делается, `version` остаётся `1.6.2`, запись остаётся в `[Unreleased]` до релиза (по `docs/versioning.md`).
 
 Открытые вопросы:
-- **Полевая проверка (7.1–7.5) остаётся открытой уже после архивации**: change в archive, но APK на P60 Pro не ставился. При появлении дней прогулок/поездок проверить `LIFE/proc_start`/`heartbeat` в `adb logcat`, долю `day_branches` ≤ 20 %, `time_s` против фактического движения, запрос уведомления на онбординге и недельный лог через `analyze-devlog.py`; найденные дефекты — отдельным change.
+- **Полевая проверка (7.1–7.5) остаётся открытой уже после архивации**: change в archive, APK 1.7.0 собран (`dist/FogMap-release-latest.apk`, в релизе — `FogMap-1.7.0.apk`), но на P60 Pro ещё не ставился. После установки проверить `LIFE/proc_start`/`heartbeat` в `adb logcat`, долю `day_branches` ≤ 20 %, `time_s` против фактического движения, запрос уведомления на онбординге и недельный лог через `analyze-devlog.py`; найденные дефекты — отдельным change.
 - Решение о бампе — на релизе APK. Уровень не ниже MINOR: появилась новая функция (экран проверки фоновой записи), одними фиксами не ограничится.
 - Вне change: 44 % точек, закрытых `fogOpened=2` на 21.10 — вопрос к `gps-trust`, не к наблюдаемости.
 
-Версия: без бампа (в Unreleased; бамп на релизе).
+Версия: 1.6.2 → 1.7.0 (MINOR, релиз APK v1.7.0 — новые видимые функции).
 
 ---
 
