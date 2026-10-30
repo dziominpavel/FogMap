@@ -67,14 +67,18 @@ object BgHealth {
 
     /**
      * Остановка не по нашей воле: OEM-тег в описании, нехватка памяти, ANR,
-     * системный freezer или принудительная остановка пользователем. Для всех
-     * этих причин автовосстановление изнутри пакета невозможно.
+     * системный freezer или принудительная остановка пользователем.
+     *
+     * `package_updated` намеренно не входит: обновление пакета — штатное
+     * событие, после которого трекинг поднимается сам по
+     * `ACTION_MY_PACKAGE_REPLACED`. Считать его OEM-убийством значило бы
+     * после каждого обновления показывать ложное «включите автозапуск».
      */
     fun isSystemStop(reason: String, vendor: String?): Boolean {
         if (vendor != null) return true
         return reason in setOf(
             "low_memory", "anr", "crash", "crash_native", "signaled", "freezer",
-            "excessive_resources", "package_state_change", "package_updated",
+            "excessive_resources", "package_state_change",
             "package_disabled", "user_requested"
         )
     }

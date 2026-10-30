@@ -12,6 +12,31 @@
 
 ---
 
+## 2026-10-30 — restart-after-update: рестарт после обновления пакета и честная диагностика package_updated
+
+Что сделали:
+- По решению владельца change `restart-after-update` создан без proposal/design: только delta-спеки `tracking`/`app-shell` и tasks; код реализован сразу.
+- `BootReceiver` принимает `ACTION_MY_PACKAGE_REPLACED` рядом с `BOOT_COMPLETED`/`LOCKED_BOOT_COMPLETED`; быстрый путь идёт через `TrackingService.start(via=update)`, поэтому каждая попытка видна в `TRACK/start_attempt`; пропуски пишутся `TRACK/restart_skip` (`paused`/`no_play_services`/`no_permission`), отказы постановки worker — `TRACK/restart_worker_schedule`.
+- `BootWorker` получает `via` из inputData и передаёт его в `TrackingService.start`; текст уведомления больше не говорит только про перезагрузку.
+- `BgHealth.isSystemStop` больше не считает `package_updated` системной остановкой: после обновления экран «Фоновая запись» не предлагает автозапуск и не показывает ложное «Система останавливала приложение».
+- Тесты: `:app:compileDebugKotlin`, `:app:testDebugUnitTest` (291 тест, 0 падений, 1 skipped), `:app:assembleDebug` — зелёные.
+- Эмулятор `fogmap-test`: `adb install -r` при работающем сервисе и закрытом приложении — сервис поднялся, в DevLog `start_attempt via=update outcome=started`; при отозванных георазрешениях — `restart_skip via=update reason=no_permission`.
+- Спеки синхронизированы в `openspec/specs/tracking` и `app-shell`; `openspec validate --specs` — 15/15 (strict остаётся с прежними warnings о длинных требованиях).
+- Change архивирован: `openspec/changes/archive/2026-10-30-restart-after-update` (proposal/design отсутствуют по решению владельца; delta-спеки уже синхронизированы).
+
+Что решили:
+- Не вводить отдельный receiver/worker: обновление пакета использует тот же временный allowlist и тот же expedited-путь, что и ребут; отличается только `via`.
+- `package_updated` — штатное событие обновления, а не OEM-убийство: диагностика не должна отправлять пользователя в автозапуск после каждой установки.
+- Change без proposal/design по прямому указанию владельца; основной источник поведения — delta-спеки + tasks.
+
+Открытые вопросы:
+- Проверить на Huawei P60 Pro после установки релизной сборки: `adb install -r` при закрытом приложении, `TRACK/start_attempt via=update`, отсутствие ложной карточки KILLED на экране «Фоновая запись».
+- Пауза при обновлении проверена кодом, но не на устройстве (сценарий `restart_skip paused`).
+
+Версия: без бампа (в Unreleased; бамп на релизе).
+
+---
+
 ## 2026-10-22 — fix-track-gap-visibility: канал LIFE, честный time_s, тихий лог, проверка фоновой записи
 
 Что сделали:

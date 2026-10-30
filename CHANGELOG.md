@@ -5,6 +5,25 @@
 
 ## [Unreleased]
 
+**Добавлено**
+- После обновления приложения трекинг возобновляется сам — открывать приложение не нужно.
+
+**Исправлено**
+- Экран «Фоновая запись» больше не считает обновление приложения остановкой системой.
+
+### Добавлено
+
+- Change: `restart-after-update`.
+- `BootReceiver` (`tracking/BootReceiver.kt`): обработка `ACTION_MY_PACKAGE_REPLACED` тем же быстрым путём, что и `BOOT_COMPLETED`; `via=boot|update`, `TRACK/restart_skip` для паузы/Play Services/разрешения, `TRACK/restart_failed` и `TRACK/restart_worker_schedule` для отказов.
+- `BootWorker`: причина `via` из inputData, `TrackingService.start(via=update)`; нейтральный текст уведомления «Восстановление записи».
+- `BgHealth`: `package_updated` исключён из `isSystemStop`; обновление показывается только информационно.
+- Тесты: `BgHealthTest` +1 (291 JVM-тест, 0 падений, 1 skipped); на эмуляторе `adb install -r` — `start_attempt via=update`, при отозванном разрешении — `restart_skip no_permission`.
+
+### Исправлено
+
+- Change: `restart-after-update`.
+- `BgHealth.isSystemStop`: `package_updated` больше не считается системной остановкой, поэтому после обновления нет ложной карточки «Система останавливала приложение» и предложения включить автозапуск.
+
 ## [1.7.0] — 2026-10-22 (MINOR)
 
 **Исправлено**

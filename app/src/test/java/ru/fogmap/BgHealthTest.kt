@@ -120,6 +120,25 @@ class BgHealthTest {
     }
 
     @Test
+    fun `обновление пакета не считается остановкой системой`() {
+        // package_updated — штатное следствие установки новой версии:
+        // трекинг поднимается сам, предлагать автозапуск нечего.
+        assertFalse(BgHealth.isSystemStop("package_updated", null))
+
+        val exit = BgHealth.exitFrom(
+            mapOf(
+                TrackingLife.KEY_REASON to "package_updated",
+                TrackingLife.KEY_AGE_MS to 60_000L
+            )
+        )!!
+        assertFalse(exit.systemStop)
+        assertFalse(
+            "после обновления нет ложной карточки KILLED",
+            BgHealth.Problem.KILLED in BgHealth.problems(snapshot(lastExit = exit))
+        )
+    }
+
+    @Test
     fun `payload причины смерти разбирается в модель`() {
         val payload = mapOf(
             TrackingLife.KEY_REASON to "low_memory",

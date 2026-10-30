@@ -17,14 +17,16 @@ import ru.fogmap.data.PrefsKeys
 import ru.fogmap.diag.DevLog
 
 /**
- * Перезапуск трекинга после ребута (задача 3.3).
- * Прямой startForegroundService из BootReceiver запрещен из фона на API 31+,
- * поэтому рестарт идет санкционированным путем: expedited-Worker + setForeground.
+ * Перезапуск трекинга после ребута или обновления приложения (задача 3.3,
+ * change `restart-after-update`). Прямой startForegroundService из
+ * BootReceiver запрещен из фона на API 31+, поэтому рестарт идет
+ * санкционированным путем: expedited-Worker + setForeground.
  */
 class BootWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
-        Log.i(TAG, "boot-restart: worker started")
+        val via = inputData.getString(KEY_VIA) ?: "boot"
+        Log.i(TAG, "boot-restart: worker started via=$via")
         // setForeground — ПЕРВЫМ делом: expedited-задачу, не ушедшую в foreground
         // за ~10 секунд, система останавливает (проверено на эмуляторе: STOP canceled).
         // Проверки разрешений/паузы — только после.
@@ -59,7 +61,7 @@ class BootWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         Log.i(TAG, "boot-restart: play=$play canTrack=$track")
         if (!play || !track) return Result.success()
         return try {
-            TrackingService.start(applicationContext, via = "boot")
+            TrackingService.start(applicationContext, via = via)
             Log.i(TAG, "boot-restart: TrackingService.start called")
             Result.success()
         } catch (t: Throwable) {
@@ -71,6 +73,8 @@ class BootWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
     }
 
     companion object {
+        /** Причина рестарта: `boot` после ребута, `update` после обновления пакета. */
+        const val KEY_VIA = "via"
         private const val TAG = "FogMapBoot"
     }
 
@@ -83,7 +87,7 @@ class BootWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         )
         val notification = NotificationCompat.Builder(applicationContext, TrackingService.CHANNEL)
             .setContentTitle("FogMap запускает трекинг")
-            .setContentText("Восстановление записи после перезагрузки")
+            .setContentText("Восстановление записи")
             .setSmallIcon(R.drawable.ic_stat_fog)
             .setOngoing(true)
             .build()

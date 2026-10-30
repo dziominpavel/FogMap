@@ -48,12 +48,14 @@
             android:foregroundServiceType="location"
             tools:node="merge" />
 
+        <!-- Авторестарт трекинга после ребута и после обновления пакета. -->
         <receiver
             android:name=".tracking.BootReceiver"
             android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
 
