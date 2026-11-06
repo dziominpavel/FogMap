@@ -37,6 +37,8 @@ object EcoLogPayload {
     const val KEY_SINCE_LAST_MS = "since_last_ms"
     /** Абсолютная монотонная шкала загрузки (fix-track-gap-visibility 4.2). */
     const val KEY_BOOT_MONO_MS = "boot_mono_ms"
+    /** Фиксы, пришедшие отложенной заморозкой пачкой (field-hardening 1.3). */
+    const val KEY_STALE_REPLAY = "stale_replay"
     /** Дневные счётчики (fix-track-gap-visibility 4.4). */
     const val KEY_DATE = "date"
     const val KEY_DIST_CM = "dist_cm"
@@ -63,7 +65,8 @@ object EcoLogPayload {
         prefixM: Long? = null,
         prefixSrc: String? = null,
         sinceLastMs: Long? = null,
-        bootMonoMs: Long? = null
+        bootMonoMs: Long? = null,
+        staleReplay: Long? = null
     ): Map<String, Any?> = mapOf(
         KEY_BATCH to batch,
         KEY_REJECTED to rejected,
@@ -77,7 +80,8 @@ object EcoLogPayload {
         KEY_PREFIX_M to prefixM,
         KEY_PREFIX_SRC to prefixSrc,
         KEY_SINCE_LAST_MS to sinceLastMs,
-        KEY_BOOT_MONO_MS to bootMonoMs
+        KEY_BOOT_MONO_MS to bootMonoMs,
+        KEY_STALE_REPLAY to staleReplay
     )
 
     /**

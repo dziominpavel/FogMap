@@ -37,6 +37,37 @@ class BranchLogGateTest {
     }
 
     @Test
+    fun `field-hardening 1_2 — событие не чаще интервала`() {
+        val pending = mapOf("static" to 5L)
+        // Первое событие процесса — сразу.
+        assertTrue(BranchLogGate.shouldLog(0L, 1_000L, pending))
+        // В пределах интервала — молчим, даже если счётчики уже накопились.
+        val t0 = 10_000_000L
+        assertFalse(BranchLogGate.shouldLog(t0, t0 + 60_000L, pending))
+        assertFalse(
+            BranchLogGate.shouldLog(
+                t0, t0 + BranchLogGate.MIN_LOG_INTERVAL_MS - 1L, pending
+            )
+        )
+        // Интервал прошёл — пишем.
+        assertTrue(BranchLogGate.shouldLog(t0, t0 + BranchLogGate.MIN_LOG_INTERVAL_MS, pending))
+        // Пустой накопитель не пишется в любом случае.
+        assertFalse(BranchLogGate.shouldLog(0L, t0, emptyMap()))
+    }
+
+    @Test
+    fun `field-hardening 1_2 — пачки сводятся без потерь`() {
+        val acc = HashMap<String, Long>()
+        BranchLogGate.merge(acc, mapOf("static" to 2L, "wake" to 1L))
+        BranchLogGate.merge(acc, mapOf("static" to 3L))
+        assertEquals(5L, acc["static"])
+        assertEquals(1L, acc["wake"])
+        // Нули не материализуются: накопитель отражает только изменения.
+        BranchLogGate.merge(acc, mapOf("teleport" to 0L))
+        assertFalse(acc.containsKey("teleport"))
+    }
+
+    @Test
     fun `снимок содержит все ветки включая нули`() {
         val snap = BranchLogGate.snapshot(mapOf("static" to 2L))
         assertEquals(TrustEngine.BRANCH_KEYS.size, snap.size)

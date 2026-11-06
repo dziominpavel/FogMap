@@ -60,6 +60,14 @@ class TrackingService : LifecycleService() {
     private val branchCounts = mutableMapOf<String, Long>()
     private var trackId: Long = -1
     private var flushJob: Job? = null
+    /** Wake-lock «движение» (field-hardening 1.1): создаётся в onCreate. */
+    private var trackingWake: TrackingWake.Holder? = null
+    private var wakeHeld: Boolean = false
+    /** Накопитель и метка события `day_branches` (field-hardening 1.2). */
+    private var lastBranchLogMs: Long = 0L
+    private val branchLogPending = HashMap<String, Long>()
+    /** Сколько фиксов пришло отложенными заморозкой (field-hardening 1.3). */
+    private var staleReplayCount: Long = 0L
     /**
      * Сериализация flush (fix-import-metrics 1.2): периодический запуск и
      * запуск по переполнению буфера не должны идти одновременно.
@@ -157,6 +165,10 @@ class TrackingService : LifecycleService() {
             stopSelf()
             return
         }
+        // Wake-lock движения (field-hardening 1.1): создаём до подписки на
+        // паузу, чтобы первый applyWake уже имел держателя.
+        trackingWake = TrackingWake.Holder(this)
+        applyWake()
         // ВРЕМЕННОЕ (dev-logging): старт сервиса.
         DevLog.i("TRACK", "service_start", mapOf("mode" to ecoModeTag()))
         // Канал жизни процесса (fix-track-gap-visibility 1.2/1.4): база для
@@ -175,6 +187,8 @@ class TrackingService : LifecycleService() {
                 container.dataStore.data.collect { prefs ->
                     val paused = prefs[PrefsKeys.PAUSED] ?: false
                     pausedCached = paused
+                    // Пауза снимает wake-lock: держать CPU незачем.
+                    applyWake()
                     updateNotification(paused)
                 }
             }
@@ -192,6 +206,8 @@ class TrackingService : LifecycleService() {
                 if (ecoProfile == EcoGovernor.Profile.BURST) {
                     ecoProfile = EcoGovernor.Profile.ACTIVE
                 }
+                // Восстановленный профиль может быть STANDBY — держать CPU нельзя.
+                applyWake()
             }
             // Якорь STANDBY с прошлого запуска (wake-balance 2.1): первое
             // смещение после рестарта считается от него, а не от нуля.
@@ -287,12 +303,21 @@ class TrackingService : LifecycleService() {
         // Доверие по последовательности (gps-trust-filter): вердикт считается
         // синхронно в колбэке; история в памяти — все принятые точки (включая
         // дропнутую STAND-статику, иначе холодный старт не выйдет из STAND).
+        val nowMs = System.currentTimeMillis()
+        val lastRecv = synchronized(buffer) { trustHistory.lastOrNull()?.recv }
+        // gps-trust: зазоры вердикта считаются по моменту приёма, а не по
+        // Location.getTime() — провайдер отдает повторяющиеся метки фикса.
+        // Исключение — отложенная заморозкой пачка (field-hardening 1.3):
+        // у неё приём один на все фиксы, и без метки фикса доверие видит
+        // «35 точек за 0 секунд» (прыжки/телепорты).
+        val recv = StaleReplay.recvFor(nowMs, loc.time, lastRecv)
+        if (StaleReplay.replayed(nowMs, recv)) {
+            synchronized(buffer) { staleReplayCount += 1 }
+        }
         val hp = TrustEngine.HistPoint(
             time = loc.time, lat = loc.latitude, lon = loc.longitude, acc = loc.accuracy,
             speed = speedOrNull,
-            // gps-trust: зазоры вердикта считаются по моменту приёма, а не по
-            // Location.getTime() — провайдер отдает повторяющиеся метки фикса.
-            recv = System.currentTimeMillis()
+            recv = recv
         )
         synchronized(buffer) {
             if (pausedCached) {
@@ -672,6 +697,12 @@ class TrackingService : LifecycleService() {
         val payloadFix = ecoSnapshot[FogRepository.ECO_FIX] ?: 0L
         val payloadStand = ecoSnapshot[FogRepository.ECO_STAND] ?: 0L
         val payloadGpsMs = ecoSnapshot[FogRepository.ECO_GPS_MS] ?: 0L
+        // Отложенная заморозкой пачка (field-hardening 1.3): число видно в логе.
+        val payloadStale: Long = synchronized(buffer) {
+            val v = staleReplayCount
+            staleReplayCount = 0
+            v
+        }
         if (txnMs > 500.0) {
             DevLog.w(
                 "TRACK", "slow_flush",
@@ -682,7 +713,8 @@ class TrackingService : LifecycleService() {
                     ecoFix = payloadFix, ecoStand = payloadStand, ecoGpsMs = payloadGpsMs,
                     prefixM = prefixM, prefixSrc = prefixSrc,
                     sinceLastMs = sinceLastMs,
-                    bootMonoMs = DevLog.bootMonoMs()
+                    bootMonoMs = DevLog.bootMonoMs(),
+                    staleReplay = payloadStale.takeIf { it > 0 }
                 )
             )
         } else {
@@ -695,7 +727,8 @@ class TrackingService : LifecycleService() {
                     ecoFix = payloadFix, ecoStand = payloadStand, ecoGpsMs = payloadGpsMs,
                     prefixM = prefixM, prefixSrc = prefixSrc,
                     sinceLastMs = sinceLastMs,
-                    bootMonoMs = DevLog.bootMonoMs()
+                    bootMonoMs = DevLog.bootMonoMs(),
+                    staleReplay = payloadStale.takeIf { it > 0 }
                 )
             )
         }
@@ -712,7 +745,22 @@ class TrackingService : LifecycleService() {
      */
     private fun logBranches(counts: Map<String, Long>) {
         if (!BranchLogGate.changed(counts)) return
-        DevLog.i("TRACK", "day_branches", EcoLogPayload.branchPayload(counts))
+        // Field-hardening 1.2: счётчики в БД пишутся на каждом flush, а событие
+        // лога — не чаще раза в 5 минут и сведённым итогом. Ни одно значение
+        // не теряется: между событиями пачки складываются в накопитель.
+        synchronized(branchLogPending) { BranchLogGate.merge(branchLogPending, counts) }
+        val now = System.currentTimeMillis()
+        val due = synchronized(branchLogPending) {
+            BranchLogGate.shouldLog(lastBranchLogMs, now, branchLogPending)
+        }
+        if (!due) return
+        val merged: Map<String, Long> = synchronized(branchLogPending) {
+            val copy = branchLogPending.toMap()
+            branchLogPending.clear()
+            copy
+        }
+        lastBranchLogMs = now
+        DevLog.i("TRACK", "day_branches", EcoLogPayload.branchPayload(merged))
     }
 
     /**
@@ -1071,6 +1119,22 @@ class TrackingService : LifecycleService() {
         }
     }
 
+    /**
+     * Держим CPU, пока пишется движение (field-hardening 1.1).
+     *
+     * FGS на Huawei не мешает системе вытеснить процесс: цикл записи вставал
+     * на часы, движение терялось. Профиль эко и флаг паузы — единственные
+     * входы; событие пишется только на смене состояния, чтобы не шуметь.
+     */
+    private fun applyWake() {
+        val holder = trackingWake ?: return
+        val want = TrackingWake.neededFor(ecoProfile, pausedCached)
+        val held = runCatching { holder.setHeld(want) }.getOrDefault(false)
+        if (held == wakeHeld) return
+        wakeHeld = held
+        DevLog.i("TRACK", "wakelock", mapOf("held" to held, "profile" to ecoProfile.name))
+    }
+
     /** Вход в профиль: ресаб + персист + лог (battery-eco 2.4, вне critical section). */
     private fun enterProfile(
         profile: EcoGovernor.Profile,
@@ -1136,6 +1200,8 @@ class TrackingService : LifecycleService() {
                 source = source
             )
         )
+        // Профиль решает, держим ли CPU (field-hardening 1.1).
+        applyWake()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -1157,6 +1223,9 @@ class TrackingService : LifecycleService() {
     }
 
     override fun onDestroy() {
+        // Wake-lock не переживает сервис (field-hardening 1.1).
+        trackingWake?.setHeld(false)
+        wakeHeld = false
         // ВРЕМЕННОЕ (dev-logging): остановка сервиса.
         DevLog.i("TRACK", "service_stop", mapOf("mode" to ecoModeTag(), "profile" to ecoProfile.name))
         stopHeartbeat()
