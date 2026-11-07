@@ -10,6 +10,24 @@
   (1.1.0, только доки/тесты/WIP)`.
 - Открытые вопросы на следующую сессию.
 
+## 2026-11-07 — одна APK для установки: чистка dist и канонический релиз 1.8.0.76
+
+Что сделали:
+- Разобрали выдачу `dist/`: в корне лежали три файла — `FogMap-release-latest.apk` (1.8.0 от 31.10), `FogMap-field-hardening.apk` (143 МБ, все ABI) и `FogMap-debug-field-hardening.apk` (160 МБ, `ru.fogmap.dev`); по ним нельзя было понять, что ставить.
+- Собрали релиз из текущего HEAD `d34c52d` (код field-hardening уже в коммите) со штатным ABI-фильтром `arm64-v8a,armeabi-v7a`: `1.8.0.76-gd34c52d-dirty-20261107-1055`, versionCode 76, 64 566 232 байта.
+- Положили его единственным файлом в корень: `dist/FogMap-release-latest.apk`; версионная копия — `dist/archive/FogMap-1.8.0.76-gd34c52d-dirty-20261107-1055-release.apk`. Прежние field-hardening сборки (release и debug) убраны в `dist/archive/field-test/`.
+- Проверка: `apksigner verify` — v2 OK, exit 0; `zipalign -c -p 4` — exit 0; сертификат `a020bda2…` совпадает с 1.8.0, поэтому ставится поверх без потери данных; `aapt2 dump badging` — `ru.fogmap`, 76, arm64-v8a + armeabi-v7a.
+
+Что решили:
+- Единственная точка выдачи — `dist/FogMap-release-latest.apk`; история и диагностические сборки живут в `dist/archive/` и в корень не возвращаются.
+- Debug-сборку `ru.fogmap.dev` не выдавать как «для установки»: она для снятия логов и ставится рядом, а не вместо релиза.
+
+Открытые вопросы:
+- На машине пропал JDK 17 (`C:\Users\Dziom\.gradle\jdks\eclipse_adoptium-17…`), из-за чего `build-apk.bat` падает с «No JDK found». Сборка выполнена вручную на JBR 21 из `.gradle/jdks/jetbrains_s_r_o_-21…` (Gradle 8.10.2 её принимает). Вернуть JDK 17 или добавить 21 в кандидаты `build-apk.bat`.
+- На P60 Pro не ставили: в `adb devices` устройств нет. После подключения — `adb install -r dist\FogMap-release-latest.apk` и полевой прогон по плану 06.11.
+
+Версия: без бампа (в Unreleased; бамп на релизе).
+
 ---
 
 ## 2026-11-06 — полевая диагностика с P60 Pro и field-hardening: wake-lock, метка приёма, шум лога
