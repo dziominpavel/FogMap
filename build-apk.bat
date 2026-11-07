@@ -22,13 +22,25 @@ rem APK itself is NOT committed to git: already excluded via *.apk in .gitignore
 setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 
-rem --- Portable JDK 17 selection: works on home + work PCs ---
+rem --- Portable JDK selection: works on home + work PCs ---
 rem gradle.properties intentionally has no org.gradle.java.home (machine-specific path).
-rem Prefer JDK 17 when found, otherwise keep the existing JAVA_HOME.
+rem Prefer JDK 17 when found; JDK 21 is a supported fallback (Gradle 8.10 + AGP
+rem accept it). JDK 25 is NOT usable: Kotlin DSL Gradle dies on 25.0.2.
+rem Keep the existing JAVA_HOME when nothing matches.
 set "CANDIDATE_JDK="
 if exist "C:\Program Files\Java\jdk-17\bin\java.exe" set "CANDIDATE_JDK=C:\Program Files\Java\jdk-17"
 if not defined CANDIDATE_JDK if exist "C:\Program Files\Java\jdk-17.0.7\bin\java.exe" set "CANDIDATE_JDK=C:\Program Files\Java\jdk-17.0.7"
 if not defined CANDIDATE_JDK if exist "%USERPROFILE%\.gradle\jdks\eclipse_adoptium-17-amd64-windows.2\bin\java.exe" set "CANDIDATE_JDK=%USERPROFILE%\.gradle\jdks\eclipse_adoptium-17-amd64-windows.2"
+rem Fallback: any JDK 17/21 under %USERPROFILE%\.gradle\jdks (e.g. JBR 21 from
+rem Android Studio). The name filter keeps JDK 25+ out on purpose.
+if not defined CANDIDATE_JDK (
+  for /d %%D in ("%USERPROFILE%\.gradle\jdks\*") do (
+    if not defined CANDIDATE_JDK if exist "%%~fD\bin\java.exe" (
+      echo %%~nxD | findstr /c:"-17" /c:"-21" >nul
+      if not errorlevel 1 set "CANDIDATE_JDK=%%~fD"
+    )
+  )
+)
 if defined CANDIDATE_JDK set "JAVA_HOME=%CANDIDATE_JDK%"
 echo Using JAVA_HOME=%JAVA_HOME%
 if not exist "%JAVA_HOME%\bin\java.exe" (

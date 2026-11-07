@@ -19,7 +19,7 @@
 - **Бамп — только в момент релиза APK** (`build-apk.bat release`): классифицировать
   всё из `[Unreleased]` (MAJOR — ломающее, MINOR — новая фича, PATCH — только фиксы),
   записать новую базу в `version`, свернуть `[Unreleased]` в версионную секцию,
-  `python scripts/check-version.py` → коммит с упоминанием версии.
+  `py -3 scripts/check-version.py` → коммит с упоминанием версии.
 - Строка `Версия:` в `docs/sessions.md` — обязательна всегда:
   `без бампа (в Unreleased; бамп на релизе)` либо `x.y.z → x.y.z (УРОВЕНЬ)`,
   если сессия и есть релиз.
@@ -27,16 +27,18 @@
 ## Инструменты и типичные грабли (проверено на этой машине)
 
 **JDK/Gradle.** Системный `java` — 25.0.2, Kotlin DSL Gradle на нём падает
-с `IllegalArgumentException: 25.0.2`. Перед ЛЮБОЙ gradle-командой выставить:
+с `IllegalArgumentException: 25.0.2`. JDK 17 на машине больше нет — рабочий
+JDK 21 (JBR, 21.0.10), Gradle 8.10.2 его принимает. Перед ЛЮБОЙ gradle-командой
+выставить:
 
 ```powershell
-$env:JAVA_HOME = "C:\Users\Dziom\.gradle\jdks\eclipse_adoptium-17-amd64-windows.2"
+$env:JAVA_HOME = "C:\Users\Dziom\.gradle\jdks\jetbrains_s_r_o_-21-amd64-windows.2"
 ```
 
-Резервные кандидаты (тот же список, что в `build-apk.bat`):
-`C:\Program Files\Java\jdk-17`, `C:\Program Files\Java\jdk-17.0.7`.
+`build-apk.bat` выбирает JDK сам: сначала 17 (Program Files, adoptium), затем
+любой JDK 17/21 из `%USERPROFILE%\.gradle\jdks` (фильтр по имени отсекает 25+).
 Флаг `-Dorg.gradle.java.home=...` НЕ работает (старый daemon уже на 25) —
-менять только `JAVA_HOME`. `build-apk.bat` ставит JDK сам.
+менять только `JAVA_HOME`.
 
 **Команды Gradle** (все с `$env:JAVA_HOME` выше):
 - компиляция: `.\gradlew.bat :app:compileDebugKotlin`
@@ -54,7 +56,8 @@ $env:JAVA_HOME = "C:\Users\Dziom\.gradle\jdks\eclipse_adoptium-17-amd64-windows.
 **PowerShell.** Код возврата — `$LASTEXITCODE` (`$?` врёт для native-команд);
 `2>&1` на stderr gradle/python приходит как `NativeCommandError` — это не падение
 команды, смотреть на код возврата/итоговый `BUILD SUCCESSFUL`. Проверка версий:
-`python scripts/check-version.py` → ожидается `exit=0`.
+`py -3 scripts/check-version.py` → ожидается `exit=0` (`python` в PATH — заглушка
+Microsoft Store, отдаёт exit 9009).
 
 **Личные данные.** `dist/` (полевые логи `fog-*.jsonl`, `track-debug_*`, скриншоты,
 APK) под `.gitignore` — в `git status` их быть не должно. Секреты:
