@@ -748,6 +748,32 @@ class FogRepository(
             BatchPlan(distanceTail = dayTail, corridorAnchor = wakeAnchor)
 
         /**
+         * Группировка батча по суткам ТОЧКИ, а не по «сейчас» (fix-stale-batch-day).
+         *
+         * Замороженный процесс отдаёт накопленную пачку разом уже после
+         * полуночи, и flush писал её в строку нового дня: на 08.11 01:39 в
+         * трек «8 ноября» легли 89 точек вечера 07.11 (17:00–20:10), а вечер
+         * 07.11 в своей строке так и остался дырой. Точка принадлежит дню
+         * своей метки — решение принимает эта чистая функция, один источник
+         * для сервиса и тестов.
+         *
+         * Порядок групп — по возрастанию даты (писать нужно от старых суток
+         * к новым), внутри группы — порядок прихода из [points]. Пусто → пусто.
+         */
+        fun groupByDay(
+            points: List<RawPoint>,
+            zone: java.time.ZoneId = java.time.ZoneId.systemDefault()
+        ): List<Pair<LocalDate, List<RawPoint>>> {
+            if (points.isEmpty()) return emptyList()
+            val byDay = LinkedHashMap<LocalDate, MutableList<RawPoint>>()
+            for (p in points) {
+                val day = java.time.Instant.ofEpochMilli(p.time).atZone(zone).toLocalDate()
+                byDay.getOrPut(day) { ArrayList() }.add(p)
+            }
+            return byDay.entries.sortedBy { it.key }.map { it.key to it.value.toList() }
+        }
+
+        /**
          * Инкременты региональных counters для новых ячеек (add-region-progress):
          * по центру ячейки — все регионы, чей полигон её содержит; вес =
          * weightOf(z) в базовых эквивалентах. Чистая — unit-тесты без БД.

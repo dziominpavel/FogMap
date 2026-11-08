@@ -611,65 +611,80 @@ class TrackingService : LifecycleService() {
         var prefixM: Long? = null
         var prefixSrc: String? = null
         runCatching {
-            // День уже гарантирован проверкой в начале flush (см. выше):
-            // батч всегда пишется в строку текущей даты, без хвоста прошлого дня.
             if (rawBatch.isNotEmpty()) {
                 container.db.rawFixDao().insertAll(rawBatch)
             }
             if (batch.isNotEmpty()) {
+                // День точки, а не «сейчас» (fix-stale-batch-day): отложенная
+                // заморозкой пачка приходит разом уже после полуночи, и раньше
+                // вся она уходила в строку НОВОГО дня — 08.11 01:39 в трек
+                // «8 ноября» легли 89 точек вечера 07.11, а вечер 07.11 остался
+                // дырой. Каждые сутки пишутся в свою строку, от старых к новым.
+                val dayGroups = FogRepository.groupByDay(batch)
+                val newestDay = dayGroups.last().first
                 // Якорь пробуждения для честного префикса/коридора (wake-balance
                 // 2.2): потребляется первым непустым flush после выхода, чтобы
                 // дистанция не считалась дважды на следующих батчах.
-                // prev читаем ДО вставки (иначе хвост — свой же батч).
-                val prevBefore = container.db.trackDao().lastPoint(trackId)
                 val aLat = wakeAnchorLat
                 val aLon = wakeAnchorLon
                 val aTime = wakeAnchorTime
-                val wakeAnchorPoint = if (aLat != null && aLon != null) {
-                    RawPoint(
-                        time = aTime, lat = aLat, lon = aLon,
-                        acc = 10f, speed = null, trust = 80,
-                        openFog = true, state = "STAND", rejectReason = null
-                    )
-                } else null
-                val appended = container.fogRepository
-                    .appendPoints(trackId, batch, wakeAnchor = wakeAnchorPoint)
-                newCells = appended.newCells
-                // Страховка той же защиты внутри appendPoints (гонка с rebuild):
-                // подтягиваем фактический id, чтобы next flush читал хвост дня.
-                if (appended.trackId != trackId) {
-                    trackId = appended.trackId
-                    DevLog.w(
-                        "TRACK", "day_chunk_recovered",
-                        mapOf("track_id" to trackId, "cause" to "stale_id")
-                    )
-                }
-                // Префикс спрямления (battery-eco 3): якорь STANDBY -> first.
-                // В бюджет префикса идет ТОЛЬКО пробуждение от якоря; разрыв
-                // prev->first после тишины — отдельная метрика (fix-eco-signal-loss 4.1).
-                val f = batch.first()
-                if (wakeAnchorPoint != null) {
-                    val d = FogRepository.haversineM(aLat!!, aLon!!, f.lat, f.lon)
-                    val kind = EcoLogPayload.prefixKind(hasAnchor = true, distanceM = d, gapS = 0)
-                    if (kind != null) {
-                        prefixCm = (d * 100).toLong()
-                        prefixN = 1L
-                        prefixM = d.toLong()
-                        prefixSrc = kind
+                for ((day, dayPoints) in dayGroups) {
+                    // Строка дня: кэш сервиса валиден только для текущих суток,
+                    // иначе find-or-create по дате самих точек (морозка через
+                    // полночь, рестарт, импорт).
+                    val tid = if (day == chunkDate) trackId
+                    else container.trackRepository.openDayChunk(day)
+                    // prev читаем ДО вставки (иначе хвост — свой же батч).
+                    val prevBefore = container.db.trackDao().lastPoint(tid)
+                    // Якорь — только новейшим суткам: он про «сейчас», а не про
+                    // вчерашние точки отложенной пачки.
+                    val wakeAnchorPoint = if (day == newestDay && aLat != null && aLon != null) {
+                        RawPoint(
+                            time = aTime, lat = aLat, lon = aLon,
+                            acc = 10f, speed = null, trust = 80,
+                            openFog = true, state = "STAND", rejectReason = null
+                        )
+                    } else null
+                    val appended = container.fogRepository
+                        .appendPoints(tid, dayPoints, date = day, wakeAnchor = wakeAnchorPoint)
+                    newCells += appended.newCells
+                    // Страховка той же защиты внутри appendPoints (гонка с rebuild):
+                    // подтягиваем фактический id, чтобы next flush читал хвост дня.
+                    if (day == chunkDate && appended.trackId != trackId) {
+                        trackId = appended.trackId
+                        DevLog.w(
+                            "TRACK", "day_chunk_recovered",
+                            mapOf("track_id" to trackId, "cause" to "stale_id")
+                        )
                     }
-                    wakeAnchorLat = null
-                    wakeAnchorLon = null
-                } else if (prevBefore != null) {
-                    val d = FogRepository.haversineM(prevBefore.lat, prevBefore.lon, f.lat, f.lon)
-                    // Пишем только значимые разрывы после тишины/STANDBY,
-                    // межбатчевые 8-секундные шаги не шумят.
-                    val dtS = (f.time - prevBefore.time) / 1000
-                    val kind = EcoLogPayload.prefixKind(hasAnchor = false, distanceM = d, gapS = dtS)
-                    if (kind != null) {
-                        gapCm = (d * 100).toLong()
-                        gapN = 1L
-                        prefixM = d.toLong()
-                        prefixSrc = kind
+                    if (day != newestDay) continue
+                    // Префикс спрямления (battery-eco 3): якорь STANDBY -> first.
+                    // В бюджет префикса идет ТОЛЬКО пробуждение от якоря; разрыв
+                    // prev->first после тишины — отдельная метрика (fix-eco-signal-loss 4.1).
+                    val f = dayPoints.first()
+                    if (wakeAnchorPoint != null) {
+                        val d = FogRepository.haversineM(aLat!!, aLon!!, f.lat, f.lon)
+                        val kind = EcoLogPayload.prefixKind(hasAnchor = true, distanceM = d, gapS = 0)
+                        if (kind != null) {
+                            prefixCm = (d * 100).toLong()
+                            prefixN = 1L
+                            prefixM = d.toLong()
+                            prefixSrc = kind
+                        }
+                        wakeAnchorLat = null
+                        wakeAnchorLon = null
+                    } else if (prevBefore != null) {
+                        val d = FogRepository.haversineM(prevBefore.lat, prevBefore.lon, f.lat, f.lon)
+                        // Пишем только значимые разрывы после тишины/STANDBY,
+                        // межбатчевые 8-секундные шаги не шумят.
+                        val dtS = (f.time - prevBefore.time) / 1000
+                        val kind = EcoLogPayload.prefixKind(hasAnchor = false, distanceM = d, gapS = dtS)
+                        if (kind != null) {
+                            gapCm = (d * 100).toLong()
+                            gapN = 1L
+                            prefixM = d.toLong()
+                            prefixSrc = kind
+                        }
                     }
                 }
             }
