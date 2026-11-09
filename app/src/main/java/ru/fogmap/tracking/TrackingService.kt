@@ -66,6 +66,11 @@ class TrackingService : LifecycleService() {
     private val branchLogPending = HashMap<String, Long>()
     /** Сколько фиксов пришло отложенными заморозкой (field-hardening 1.3). */
     private var staleReplayCount: Long = 0L
+    /** Замер старта движения: момент и зазор до предыдущего фикса (adaptive-motion-state). */
+    @Volatile
+    private var lastFixWallMs: Long = 0L
+    @Volatile
+    private var lastFixGapMs: Long = 0L
     /**
      * Сериализация flush (fix-import-metrics 1.2): периодический запуск и
      * запуск по переполнению буфера не должны идти одновременно.
@@ -253,6 +258,11 @@ class TrackingService : LifecycleService() {
     }
 
     private fun onRawLocation(loc: Location) {
+        // Замер задержки старта движения: зазор до предыдущего фикса. После
+        // разморозки он и есть «сколько поездки мы не видели».
+        val nowFix = System.currentTimeMillis()
+        lastFixGapMs = if (lastFixWallMs > 0) nowFix - lastFixWallMs else 0L
+        lastFixWallMs = nowFix
         @Suppress("DEPRECATION")
         val isMock = if (Build.VERSION.SDK_INT >= 31) loc.isMock else loc.isFromMockProvider
         val accOrDef = if (loc.hasAccuracy()) loc.accuracy else -1f
@@ -1400,7 +1410,8 @@ class TrackingService : LifecycleService() {
                 fromProfile = from.name,
                 wakeM = wakeM,
                 verdict = verdict,
-                source = source
+                source = source,
+                idleMs = if (from == EcoGovernor.Profile.STANDBY) lastFixGapMs else null
             )
         )
         // Профиль решает, держим ли CPU (field-hardening 1.1).

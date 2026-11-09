@@ -19,6 +19,8 @@ object EcoLogPayload {
     const val KEY_FROM_PROFILE = "from_profile"
     const val KEY_WAKE_M = "wake_m"
     const val KEY_VERDICT = "verdict"
+    /** Замер задержки старта движения (adaptive-motion-state). */
+    const val KEY_IDLE_MS = "idle_ms"
     /** Источник пробуждения (wake-balance-parking 4.1): gps/motion/wifi/timeout/restart. */
     const val KEY_SOURCE = "source"
     /**
@@ -134,7 +136,12 @@ object EcoLogPayload {
         fromProfile: String,
         wakeM: Long?,
         verdict: String?,
-        source: String? = null
+        source: String? = null,
+        /**
+         * Сколько прошло между предыдущим фиксом и тем, что разбудил профиль
+         * (adaptive-motion-state, замер): цена задержки старта движения.
+         */
+        idleMs: Long? = null
     ): Map<String, Any?> = buildMap {
         put(KEY_MODE, mode)
         put(KEY_PROFILE, profile)
@@ -147,6 +154,8 @@ object EcoLogPayload {
         if (src == EcoGovernor.WakeSource.WIFI || src == EcoGovernor.WakeSource.MOTION) {
             put(KEY_BURST_WINDOW_MS, EcoGovernor.BURST_WINDOW_MS)
         }
+        // Замер старта движения: сколько мы не знали о движении до этого фикса.
+        if (idleMs != null && idleMs > 0) put(KEY_IDLE_MS, idleMs)
     }
 
     /**
