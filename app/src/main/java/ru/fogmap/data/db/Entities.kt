@@ -239,6 +239,17 @@ interface TrackDao {
     @Query("UPDATE tracks SET name = :name WHERE id = :id")
     suspend fun rename(id: Long, name: String)
 
+    /** Аудит дня (day-ledger 2.3): абсолютная запись статистики после пересчёта. */
+    @Query(
+        "UPDATE tracks SET distanceM = :distM, pointsCount = :count, " +
+            "finishedAt = :finishedAt WHERE id = :id"
+    )
+    suspend fun auditStats(id: Long, distM: Double, count: Int, finishedAt: Long)
+
+    /** Перенос точки в строку своей даты (аудит чужих точек). */
+    @Query("UPDATE track_points SET trackId = :trackId WHERE id IN (:ids)")
+    suspend fun reassignPoints(ids: List<Long>, trackId: Long)
+
     @Query("DELETE FROM tracks WHERE id = :id")
     suspend fun deleteTrack(id: Long)
 
@@ -324,6 +335,104 @@ interface CounterDao {
         if (updated == 0) set(CounterEntity(key, delta))
     }
 
+
     @Query("DELETE FROM counters")
+    suspend fun clearAll()
+}
+
+/**
+ * Журнал приёма фиксов (fix-journal 1.1): точка сначала попадает сюда, потом
+ * обрабатывается. Ключ fix_time|lat|lon — естественная дедупликация на входе:
+ * повторная доставка того же фикса не создаёт вторую строку.
+ */
+@Entity(
+    tableName = "fix_inbox",
+    indices = [
+        Index(value = ["key"], unique = true),
+        Index(value = ["state", "fixTime"])
+    ]
+)
+data class FixInboxEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    /** Естественный ключ фикса: время фикса + координаты. */
+    val key: String,
+    val fixTime: Long,
+    /** Момент приёма (wall clock) — база зазоров доверия. */
+    val recvMs: Long,
+    val lat: Double,
+    val lon: Double,
+    val acc: Float,
+    val speed: Float?,
+    val source: String,
+    /** Локальная дата метки фикса, считается один раз при приёме. */
+    val day: String,
+    /** 0 — новый, 1 — обработан, 2 — отброшен (с причиной в [error]). */
+    val state: Int = STATE_NEW,
+    val error: String? = null
+) {
+    companion object {
+        const val STATE_NEW = 0
+        const val STATE_DONE = 1
+        const val STATE_DROPPED = 2
+    }
+}
+
+@Dao
+interface FixInboxDao {
+    /** IGNORE по уникальному ключу: дубль доставки не создаёт вторую строку. */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertIgnore(row: FixInboxEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertAllIgnore(rows: List<FixInboxEntity>)
+
+    @Query("SELECT * FROM fix_inbox WHERE state = 0 ORDER BY fixTime ASC, id ASC LIMIT :limit")
+    suspend fun pendingBatch(limit: Int): List<FixInboxEntity>
+
+    @Query("UPDATE fix_inbox SET state = 1 WHERE id IN (:ids)")
+    suspend fun markDone(ids: List<Long>)
+
+    @Query("UPDATE fix_inbox SET state = 2, error = :error WHERE id IN (:ids)")
+    suspend fun markDropped(ids: List<Long>, error: String)
+
+    @Query("SELECT COUNT(*) FROM fix_inbox WHERE state = 0")
+    suspend fun pendingCount(): Long
+
+    @Query("SELECT COUNT(*) FROM fix_inbox WHERE state = :state")
+    suspend fun countByState(state: Int): Long
+
+    /** Чистка разобранного хвоста: журнал не растёт бесконечно. */
+    @Query("DELETE FROM fix_inbox WHERE state <> 0 AND fixTime < :beforeMs")
+    suspend fun pruneDone(beforeMs: Long)
+
+    @Query("DELETE FROM fix_inbox")
+    suspend fun clearAll()
+}
+
+/** Реестр дней (day-ledger): единственный источник «дата → строка трека». */
+@Entity(tableName = "days")
+data class DayEntity(
+    /** yyyy-MM-dd в зоне устройства. */
+    @PrimaryKey val day: String,
+    val trackId: Long,
+    val openedAt: Long
+)
+
+@Dao
+interface DayDao {
+    @Query("SELECT * FROM days WHERE day = :day")
+    suspend fun byDay(day: String): DayEntity?
+
+    /** IGNORE: существующий день не переоткрывается и не меняет trackId. */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertIgnore(row: DayEntity): Long
+
+    @Query("SELECT * FROM days ORDER BY day DESC")
+    suspend fun all(): List<DayEntity>
+
+    @Query("UPDATE days SET trackId = :trackId WHERE day = :day")
+    suspend fun rebind(day: String, trackId: Long)
+
+    @Query("DELETE FROM days")
     suspend fun clearAll()
 }

@@ -23,9 +23,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
-import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
-import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -133,11 +131,18 @@ class TrackingService : LifecycleService() {
     private var trustPrev: TrustEngine.PrevState? = null
     private val trustHistory = ArrayDeque<TrustEngine.HistPoint>()
 
-    private val callback = object : LocationCallback() {
-        override fun onLocationResult(result: LocationResult) {
-            for (loc in result.locations) onRawLocation(loc)
-        }
-    }
+    /**
+     * Идентификаторы журнала, разобранные в текущем цикле (fix-journal 3.3):
+     * помечаются обработанными в той же транзакции, что и точки, иначе смерть
+     * процесса между записью и отметкой дала бы дубли.
+     */
+    private val inboxIdsInFlight = mutableListOf<Long>()
+    /** Порция журнала за один проход: лимит переменных SQLite и размер транзакции. */
+    private val inboxLimit = INBOX_BATCH
+
+    /** Контейнер приложения: единый способ достать БД из сервиса. */
+    private val appContainer: ru.fogmap.data.AppContainer
+        get() = (application as FogMapApp).container
 
     override fun onCreate() {
         super.onCreate()
@@ -197,6 +202,10 @@ class TrackingService : LifecycleService() {
             // строкой с нулями даже до первой движущейся точки.
             trackId = container.trackRepository.openDayChunk()
             chunkDate = java.time.LocalDate.now()
+            // Контекст доверия после рестарта (fix-journal D4): окно 60 с
+            // поднимается из точек дня, иначе первая точка после пробуждения
+            // судится как холодный старт и рвёт непрерывность.
+            restoreTrust(container)
             // Нули веток дня видимы с первого момента (6.2), не после flush.
             runCatching { container.fogRepository.recordBranches(emptyMap(), chunkDate) }
             // Эко-профиль с прошлого запуска (battery-eco 2.4).
@@ -491,6 +500,114 @@ class TrackingService : LifecycleService() {
         history = history, prev = prev, recv = System.currentTimeMillis()
     )
 
+    /**
+     * Разбор журнала в живой конвейер (fix-journal D2/D4). Порядок — по метке
+     * фикса; календарная дата точки уже посчитана при приёме и здесь не
+     * пересчитывается, поэтому ночная пачка не теряет свой день.
+     */
+    private suspend fun drainInbox() {
+        val dao = appContainer.db.fixInboxDao()
+        val rows = runCatching { dao.pendingBatch(inboxLimit) }.getOrNull().orEmpty()
+        if (rows.isEmpty()) return
+        for (row in rows) {
+            synchronized(buffer) { inboxIdsInFlight.add(row.id) }
+            if (row.source == FixEnvelope.SOURCE_MOCK) {
+                // Мок-фикс не делаем Location: помечаем отброс и строку черного ящика.
+                synchronized(buffer) {
+                    rejected[FogRepository.REJECT_MOCK] =
+                        (rejected[FogRepository.REJECT_MOCK] ?: 0) + 1
+                    ecoFixCount += 1
+                    rawBuffer.add(
+                        RawTrace.build(
+                            time = row.fixTime, lat = row.lat, lon = row.lon,
+                            acc = row.acc, speed = row.speed, isMock = true,
+                            filter = FogRepository.REJECT_MOCK, state = null, trust = null,
+                            openFog = null, rejectReason = null, history = emptyList()
+                        )
+                    )
+                }
+            } else {
+                onRawLocation(locationOf(row))
+            }
+        }
+        DevLog.i(
+            "TRACK", "inbox_drain",
+            mapOf("rows" to rows.size, "pending" to runCatching { dao.pendingCount() }.getOrDefault(0L))
+        )
+    }
+
+    /**
+     * Восстановление контекста вердикта из БД (fix-journal D4): окно истории
+     * 60 с и последнее состояние. Память — кэш, а не хранилище: после смерти
+     * процесса непрерывность восстанавливается из точек дня.
+     */
+    private suspend fun restoreTrust(container: ru.fogmap.data.AppContainer) {
+        runCatching {
+            val dao = container.db.trackDao()
+            val points = dao.pointsOf(trackId)
+            val last = points.lastOrNull() ?: return@runCatching
+            val lastState = runCatching { TrustEngine.State.valueOf(last.state) }
+                .getOrDefault(TrustEngine.State.MOVING)
+            trustPrev = TrustEngine.PrevState(
+                state = lastState,
+                trust = last.trust,
+                anchorLat = last.lat,
+                anchorLon = last.lon,
+                kind = MotionKindClassifier.classify(last.speed, null)
+            )
+            val from = last.time - TrustEngine.HISTORY_MAX_AGE_MS
+            val tail = points.filter { it.time >= from }
+            synchronized(buffer) {
+                trustHistory.clear()
+                for (p in tail) {
+                    trustHistory.addLast(
+                        TrustEngine.HistPoint(
+                            time = p.time, lat = p.lat, lon = p.lon,
+                            acc = p.acc, speed = p.speed, recv = p.time
+                        )
+                    )
+                }
+            }
+            DevLog.i(
+                "TRACK", "trust_restored",
+                mapOf("points" to tail.size, "state" to lastState.name, "trust" to last.trust)
+            )
+        }
+    }
+
+    /**
+     * Возврат пачки в буферы после неудачной записи (fix-journal 5.1):
+     * упавший коммит не должен уносить данные. Порядок восстанавливается
+     * в начало очереди, счётчики складываются обратно.
+     */
+    private fun requeueFlush(
+        batch: List<RawPoint>,
+        rej: Map<String, Long>,
+        rawBatch: List<RawFixEntity>,
+        inboxIds: List<Long>,
+        eco: Map<String, Long>
+    ) {
+        synchronized(buffer) {
+            if (batch.isNotEmpty()) buffer.addAll(0, batch)
+            if (rawBatch.isNotEmpty()) rawBuffer.addAll(0, rawBatch)
+            if (inboxIds.isNotEmpty()) inboxIdsInFlight.addAll(0, inboxIds)
+            for ((key, n) in rej) rejected[key] = (rejected[key] ?: 0) + n
+            eco[FogRepository.ECO_FIX]?.let { ecoFixCount += it }
+            eco[FogRepository.ECO_STAND]?.let { ecoStandCount += it }
+            eco[FogRepository.ECO_IDLE_BURST]?.let { idleBurstPending += it }
+        }
+    }
+
+    /** Строка журнала как Location для существующего конвейера вердикта. */
+    private fun locationOf(row: ru.fogmap.data.db.FixInboxEntity): Location =
+        Location("fused").apply {
+            time = row.fixTime
+            latitude = row.lat
+            longitude = row.lon
+            accuracy = row.acc
+            row.speed?.let { speed = it }
+        }
+
     private suspend fun flush() {
         // Сериализация (fix-import-metrics 1.2): таймер и переполнение буфера
         // не пересекаются, дистанция/время/клетки не двоятся.
@@ -500,12 +617,32 @@ class TrackingService : LifecycleService() {
     /** Тело flush под [flushMutex]: чтение буферов, транзакция, метрики, лог. */
     private suspend fun flushLocked() {
         val container = (application as FogMapApp).container
+        // Журнал первичен (fix-journal D2/D4): то, что система успела доставить,
+        // разбирается до записи пачки — иначе фиксы ждали бы следующего тика.
+        drainInbox()
         // Граница суток — ДО ветки starved (day-track-history D5/D6): полночь
         // режет день строго в 00:00, новый день материализуется пустой строкой
         // даже если писать нечего; коридор через полночь не тянется.
         runCatching {
             val today = java.time.LocalDate.now()
             if (today != chunkDate) {
+                // Аудит закрываемого дня (day-ledger 2.3): пересчёт из точек и
+                // ремонт расхождений ДО лога и переключения чанка.
+                runCatching {
+                    val res = ru.fogmap.data.DayAuditRepository(container.db).audit(chunkDate)
+                    DevLog.i(
+                        "TRACK", "audit",
+                        mapOf(
+                            "day" to chunkDate.toString(),
+                            "ok" to if (res.ok) 1 else 0,
+                            "points" to (res.totals?.points ?: 0),
+                            "fixed_points" to if (res.fixedPoints) 1 else 0,
+                            "fixed_time" to if (res.fixedTime) 1 else 0,
+                            "fixed_distance" to if (res.fixedDistance) 1 else 0,
+                            "moved" to res.movedForeign
+                        )
+                    )
+                }
                 // Закрытие дня (fix-track-gap-visibility 4.4): дневные счётчики
                 // пишутся в лог ДО переключения чанка, пока trackId и counters
                 // еще принадлежат закрываемому дню.
@@ -579,6 +716,17 @@ class TrackingService : LifecycleService() {
         checkSilence(sinceLastMs)
         // Эко/ветки сливаем даже в starved (нули веток видимы всегда, 6.2).
         if (starved) {
+            // Строки журнала, разобранные без точек и отбросов (STAND в STANDBY,
+            // сэмплированный сыряк): их исход окончательный, помечаем здесь.
+            // Иначе журнал растёт вечно — полевой прогон 09.11 дал 1236 строк.
+            val idleIds = synchronized(buffer) {
+                val copy = inboxIdsInFlight.toList()
+                inboxIdsInFlight.clear()
+                copy
+            }
+            if (idleIds.isNotEmpty()) {
+                runCatching { container.db.fixInboxDao().markDone(idleIds) }
+            }
             runCatching { container.fogRepository.recordEco(ecoSnapshot) }
             runCatching { container.fogRepository.recordBranches(branchSnapshot, chunkDate) }
             logBranches(branchSnapshot)
@@ -599,6 +747,13 @@ class TrackingService : LifecycleService() {
             rawBuffer.clear()
             copy
         }
+        // Идентификаторы журнала, разобранные в этом цикле: помечаются в той же
+        // транзакции, что и точки (fix-journal 3.3) — дублей после смерти нет.
+        val inboxIds: List<Long> = synchronized(buffer) {
+            val copy = inboxIdsInFlight.toList()
+            inboxIdsInFlight.clear()
+            copy
+        }
         // ВРЕМЕННОЕ (dev-logging): замер транзакции flush (только counts, без координат).
         val t0 = System.nanoTime()
         var newCells = 0
@@ -610,10 +765,11 @@ class TrackingService : LifecycleService() {
         var gapN = 0L
         var prefixM: Long? = null
         var prefixSrc: String? = null
-        runCatching {
+        try {
             if (rawBatch.isNotEmpty()) {
                 container.db.rawFixDao().insertAll(rawBatch)
             }
+            var idsToMark = inboxIds
             if (batch.isNotEmpty()) {
                 // День точки, а не «сейчас» (fix-stale-batch-day): отложенная
                 // заморозкой пачка приходит разом уже после полуночи, и раньше
@@ -645,8 +801,11 @@ class TrackingService : LifecycleService() {
                             openFog = true, state = "STAND", rejectReason = null
                         )
                     } else null
-                    val appended = container.fogRepository
-                        .appendPoints(tid, dayPoints, date = day, wakeAnchor = wakeAnchorPoint)
+                    val appended = container.fogRepository.appendPoints(
+                        tid, dayPoints, date = day, wakeAnchor = wakeAnchorPoint,
+                        inboxIds = idsToMark
+                    )
+                    idsToMark = emptyList()
                     newCells += appended.newCells
                     // Страховка той же защиты внутри appendPoints (гонка с rebuild):
                     // подтягиваем фактический id, чтобы next flush читал хвост дня.
@@ -688,6 +847,12 @@ class TrackingService : LifecycleService() {
                     }
                 }
             }
+            // Строки журнала, не давшие точек (только отбросы или сыряк):
+            // исход окончательный, иначе они останутся в очереди навсегда.
+            if (idsToMark.isNotEmpty()) {
+                container.db.fixInboxDao().markDone(idsToMark)
+                idsToMark = emptyList()
+            }
             if (rej.isNotEmpty()) container.fogRepository.recordRejected(rej)
             container.fogRepository.recordBranches(branchSnapshot, chunkDate)
             val ecoToWrite = HashMap<String, Long>(ecoSnapshot)
@@ -703,6 +868,17 @@ class TrackingService : LifecycleService() {
                 ecoToWrite[FogRepository.ECO_GAP_N] = gapN
             }
             container.fogRepository.recordEco(ecoToWrite)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // Отмена — не повод терять пачку (fix-journal 5.1/5.2): возвращаем
+            // в буферы и пробрасываем дальше, чтобы корутина умерла честно.
+            requeueFlush(batch, rej, rawBatch, inboxIds, ecoSnapshot)
+            throw e
+        } catch (e: Throwable) {
+            requeueFlush(batch, rej, rawBatch, inboxIds, ecoSnapshot)
+            DevLog.w(
+                "TRACK", "flush_failed",
+                mapOf("err" to (e.javaClass.simpleName + ": " + (e.message ?: "")).take(200))
+            )
         }
         val txnMs = (System.nanoTime() - t0) / 1e6
         val mode = ecoModeTag()
@@ -899,6 +1075,11 @@ class TrackingService : LifecycleService() {
         }
     }
 
+    /**
+     * Подписка на фиксы через PendingIntent (fix-journal D1): доставку
+     * выполняет система, поднимая процесс на каждом broadcast, а не колбэк
+     * внутри живого сервиса. Заморозка процесса больше не теряет приём.
+     */
     private fun subscribeFused(profile: EcoGovernor.Profile = EcoGovernor.Profile.ACTIVE) {
         val params = EcoGovernor.paramsFor(profile)
         val request = LocationRequest.Builder(params.priority, params.intervalMs)
@@ -908,17 +1089,24 @@ class TrackingService : LifecycleService() {
             .build()
         try {
             LocationServices.getFusedLocationProviderClient(this)
-                .requestLocationUpdates(request, callback, Looper.getMainLooper())
+                .requestLocationUpdates(request, fixPendingIntent())
         } catch (_: SecurityException) {
             stopSelf()
         }
     }
 
+    /** Broadcast-приёмник журнала: mutable — система дописывает extras результата. */
+    private fun fixPendingIntent(): PendingIntent = PendingIntent.getBroadcast(
+        this, 0,
+        Intent(this, LocationFixReceiver::class.java).setAction(LocationFixReceiver.ACTION_FIX),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+    )
+
     /** Переподписка на профиль (battery-eco 2.1/2.5): единая точка, шторм гасится. */
     private fun resubscribe(profile: EcoGovernor.Profile) {
         runCatching {
             LocationServices.getFusedLocationProviderClient(this)
-                .removeLocationUpdates(callback)
+                .removeLocationUpdates(fixPendingIntent())
         }
         subscribeFused(profile)
         lastResubMs = System.currentTimeMillis()
@@ -1248,7 +1436,7 @@ class TrackingService : LifecycleService() {
         stopWifiWake()
         runCatching {
             LocationServices.getFusedLocationProviderClient(this)
-                .removeLocationUpdates(callback)
+                .removeLocationUpdates(fixPendingIntent())
         }
         flushBlocking()
         // Метка жизни на диск: разрыв до следующего proc_start будет точным.
@@ -1301,6 +1489,8 @@ class TrackingService : LifecycleService() {
         const val NOTIF_ID = 41
         /** Flush-интервал (tracking-reliability 2.1): потери при убийстве — не больше него. */
         const val FLUSH_INTERVAL_MS = 15_000L
+    /** Порция журнала за проход (fix-journal 3.2). */
+    const val INBOX_BATCH = 200
         const val FLUSH_SIZE = 20
         /** Тишина Fused дольше порога = интервал no-fix (tracking-reliability 3.1). */
         const val NO_FIX_GAP_MS = SilenceGap.THRESHOLD_MS

@@ -79,9 +79,20 @@ class FogRepository(
         trackId: Long,
         points: List<RawPoint>,
         date: LocalDate = LocalDate.now(),
-        wakeAnchor: RawPoint? = null
+        wakeAnchor: RawPoint? = null,
+        /**
+         * Строки журнала приёма, разобранные этим батчем (fix-journal 3.3):
+         * отметка «обработано» ставится в той же транзакции, что и точки,
+         * поэтому смерть процесса между записью и отметкой не даёт дублей.
+         */
+        inboxIds: List<Long> = emptyList()
     ): BatchResult {
-        if (points.isEmpty()) return BatchResult(0, 0.0, trackId)
+        if (points.isEmpty()) {
+            if (inboxIds.isNotEmpty()) {
+                db.withTransaction { db.fixInboxDao().markDone(inboxIds) }
+            }
+            return BatchResult(0, 0.0, trackId)
+        }
         var newBase = 0
         var distance = 0.0
         var resolvedTrackId = trackId
@@ -141,6 +152,7 @@ class FogRepository(
                 if (distCm > 0) counters.addOrInsert("distance_cm_$suffix", distCm)
                 if (timeS > 0) counters.addOrInsert("time_s_$suffix", timeS)
             }
+            if (inboxIds.isNotEmpty()) db.fixInboxDao().markDone(inboxIds)
         }
         // Ачивки (add-achievements 2.5): после коммита транзакции — триггеры
         // по % регионов и суммарной площади; тост по событию unlocked.

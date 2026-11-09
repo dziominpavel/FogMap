@@ -12,9 +12,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 @Database(
     entities = [
         VisitedCell::class, TrackEntity::class, TrackPointEntity::class,
-        CounterEntity::class, RawFixEntity::class, AchievementEntity::class
+        CounterEntity::class, RawFixEntity::class, AchievementEntity::class,
+        FixInboxEntity::class, DayEntity::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -23,8 +24,24 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun counterDao(): CounterDao
     abstract fun rawFixDao(): RawFixDao
     abstract fun achievementDao(): AchievementDao
+    abstract fun fixInboxDao(): FixInboxDao
+    abstract fun dayDao(): DayDao
 
     companion object {
+        /**
+         * Бэкфилл реестра дней из tracks (day-ledger): на каждую локальную дату
+         * — новейшая строка. Вынесен константой, чтобы миграция и тест
+         * проверяли ровно один SQL.
+         */
+        const val DAYS_BACKFILL_SQL =
+            "INSERT OR IGNORE INTO days(day, trackId, openedAt) " +
+                "SELECT date(t.startedAt / 1000, 'unixepoch', 'localtime'), " +
+                "t.id, t.startedAt FROM tracks t " +
+                "WHERE t.id = (SELECT t2.id FROM tracks t2 WHERE " +
+                "date(t2.startedAt / 1000, 'unixepoch', 'localtime') = " +
+                "date(t.startedAt / 1000, 'unixepoch', 'localtime') " +
+                "ORDER BY t2.startedAt DESC LIMIT 1)"
+
         /** v1 -> v2: индекс по track_points(trackId) для быстрого чтения трека. */
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -108,6 +125,38 @@ abstract class AppDatabase : RoomDatabase() {
                         "id TEXT NOT NULL PRIMARY KEY, " +
                         "unlockedAt INTEGER NOT NULL)"
                 )
+            }
+        }
+
+        /**
+         * v7 -> v8: журнал приёма фиксов и реестр дней (fix-journal, day-ledger).
+         * Старые таблицы не меняются; `days` заполняется из `tracks` по
+         * локальной дате `startedAt` — на каждую дату новейшая строка.
+         */
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS fix_inbox (" +
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "key TEXT NOT NULL, fixTime INTEGER NOT NULL, " +
+                        "recvMs INTEGER NOT NULL, lat REAL NOT NULL, lon REAL NOT NULL, " +
+                        "acc REAL NOT NULL, speed REAL, source TEXT NOT NULL, " +
+                        "day TEXT NOT NULL, state INTEGER NOT NULL DEFAULT 0, error TEXT)"
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS index_fix_inbox_key " +
+                        "ON fix_inbox(key)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_fix_inbox_state_fixTime " +
+                        "ON fix_inbox(state, fixTime)"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS days (" +
+                        "day TEXT NOT NULL, trackId INTEGER NOT NULL, " +
+                        "openedAt INTEGER NOT NULL, PRIMARY KEY(day))"
+                )
+                db.execSQL(DAYS_BACKFILL_SQL)
             }
         }
     }

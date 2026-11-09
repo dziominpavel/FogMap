@@ -3,6 +3,7 @@ package ru.fogmap.data
 import androidx.room.withTransaction
 import ru.fogmap.data.db.AppDatabase
 import ru.fogmap.data.db.CounterEntity
+import ru.fogmap.data.db.DayEntity
 import ru.fogmap.data.db.TrackEntity
 import ru.fogmap.fog.FogGrid
 import java.time.LocalDate
@@ -49,11 +50,38 @@ class TrackRepository(
      * счетчиков; новая создается (пустой, с нулями) только при отсутствии.
      * Рестарт в тот же день продолжает ту же строку; полночь — новую.
      */
-    suspend fun openDayChunk(date: LocalDate = LocalDate.now()): Long {
-        val (fromMs, toMs) = dayBoundsMs(date)
+    suspend fun openDayChunk(date: LocalDate = LocalDate.now()): Long = openDay(date)
+
+    /**
+     * Открытие дня через реестр (day-ledger 1.1/1.2): источник истины —
+     * таблица days, а не «новейшая строка в диапазоне». Повтор, рестарт и
+     * импорт возвращают тот же id и не создают вторую строку даты.
+     *
+     * Строка дня и запись в реестр — одна транзакция, поэтому точка никогда
+     * не получит день, которого нет в реестре.
+     */
+    suspend fun openDay(date: LocalDate = LocalDate.now()): Long {
+        val key = date.toString()
         return db.withTransaction {
+            val known = db.dayDao().byDay(key)
+            if (known != null) {
+                // Строка дня могла исчезнуть (удаление трека, импорт/rebuild):
+                // реестр обязан указывать на живую строку, иначе точки уйдут
+                // сиротами. Перевязываем день на пересозданную строку.
+                if (db.trackDao().trackById(known.trackId) != null) {
+                    return@withTransaction known.trackId
+                }
+                val fresh = startDayChunk(date)
+                db.dayDao().rebind(key, fresh)
+                return@withTransaction fresh
+            }
+            val (fromMs, toMs) = dayBoundsMs(date)
+            // Страховка миграции: реестр мог не знать о строке, созданной
+            // до её появления (импорт, откат версии приложения).
             val existing = db.trackDao().latestInRange(fromMs, toMs)
-            if (existing != null) existing.id else startDayChunk(date)
+            val id = existing?.id ?: startDayChunk(date)
+            db.dayDao().insertIgnore(DayEntity(key, id, System.currentTimeMillis()))
+            id
         }
     }
 

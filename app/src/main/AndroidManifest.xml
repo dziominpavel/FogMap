@@ -69,6 +69,16 @@
             android:name=".tracking.WatchdogAlarmReceiver"
             android:exported="false" />
 
+        <!-- Приём фиксов вне процесса (fix-journal D1): Fused доставляет сюда
+             через PendingIntent, система поднимает процесс сама. -->
+        <receiver
+            android:name=".tracking.LocationFixReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="ru.fogmap.tracking.FIX" />
+            </intent-filter>
+        </receiver>
+
         <!-- ВРЕМЕННОЕ (dev-logging): Share JSONL из cache/logs. -->
         <provider
             android:name="androidx.core.content.FileProvider"

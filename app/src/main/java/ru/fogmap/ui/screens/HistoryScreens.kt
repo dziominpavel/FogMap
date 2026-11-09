@@ -328,6 +328,8 @@ fun HistoryDetailScreen(nav: NavController, trackId: Long) {
     var dayPrefixMedianM by remember { mutableStateOf<Double?>(null) }
     // Счётчики веток TrustEngine (fix-walk-fog-verdict 6.3): все ключи, включая 0.
     var dayBranches by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
+    // Журнал приёма (fix-journal 4.1): сколько фиксов ещё не разобрано.
+    var inboxPending by remember { mutableStateOf(0L) }
     val points = pointEnts.map { Point(it.lat, it.lon) }
     var renameOpen by remember { mutableStateOf(false) }
     var deleteOpen by remember { mutableStateOf(false) }
@@ -340,6 +342,9 @@ fun HistoryDetailScreen(nav: NavController, trackId: Long) {
         val all = app.container.trackRepository.allTracks()
         track = all.firstOrNull { it.id == trackId }
         pointEnts = app.container.trackRepository.pointsOf(trackId)
+        inboxPending = runCatching {
+            app.container.db.fixInboxDao().pendingCount()
+        }.getOrDefault(0L)
         // Дельта и диагностика — по дате старта дня (день-атом).
         runCatching {
             val t = track
@@ -457,6 +462,13 @@ fun HistoryDetailScreen(nav: NavController, trackId: Long) {
                         }
                     }
                 }
+            }
+            if (inboxPending > 0) {
+                Text(
+                    "Ожидает обработки: $inboxPending фиксов — сервис разберёт их " +
+                        "при следующем пробуждении",
+                    style = MaterialTheme.typography.bodySmall
+                )
             }
             if (points.isEmpty()) {
                 Text("Точек движения нет — день дома")
