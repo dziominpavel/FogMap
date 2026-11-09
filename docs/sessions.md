@@ -10,6 +10,27 @@
   (1.1.0, только доки/тесты/WIP)`.
 - Открытые вопросы на следующую сессию.
 
+## 2026-11-09 (вечер) — adaptive-motion-state: переходы активности и быстрый старт
+
+Что сделали:
+- Применили change `adaptive-motion-state` частично (5 из 12 задач закрыты, остальные ждут поля).
+- `MotionMachine` (`tracking/MotionState.kt`): чистое состояние `STILL/MOVING/UNKNOWN`, переходы по фиксу (скорость, точность, зазор), по активности и по тишине; `planFor` выводит профиль и wake-lock. Fast-path: одиночный фикс `acc ≤ 25`, `speed ≥ 1` переводит в MOVING сразу.
+- `ActivityTransitions` + `ActivityTransitionReceiver`: переходы через PendingIntent (`exit STILL`, `enter WALKING/IN_VEHICLE/ON_BICYCLE`), метка в `ActivitySignal`, подъём сервиса через `InboxWork`; источник `ar` в `eco_state`.
+- `EcoGovernor.standbyIntervalMs(arAvailable)`: 120 с при живых переходах, 60 с без них; интервал STANDBY в `subscribeFused` берётся из этой функции.
+- Онбординг: запрос `ACTIVITY_RECOGNITION` после фоновой геолокации; отказ не ломает запись, `TRACK/wake_source_unavailable`.
+- Проверка: `:app:testDebugUnitTest` — 322 теста, 0 падений (`MotionStateTest` 8, `EcoLogPayloadTest` +1).
+
+Что решили:
+- См. `docs/decisions.md` от 09.11: одно состояние движения, AR через PendingIntent, fast-path, расслабление STANDBY только при AR, спуск — по дебаунсу.
+
+Открытые вопросы:
+- Полная замена всех вызовов `enterProfile` состоянием (задача 1.3) не сделана: риск сломать удержание после скорости, делать отдельным шагом после полевых суток.
+- Проверки на устройстве: `ar_subscribe`, реальные `activity_transition`, ребут; бюджет `idle_ms` (медиана ≤ 60 с) — по полевым суткам.
+
+Версия: без бампа (в Unreleased; бамп на релизе).
+
+---
+
 ## 2026-11-08 (вечер) — durable-tracking-pipeline: журнал фиксов, реестр дней, аудит
 
 Что сделали:

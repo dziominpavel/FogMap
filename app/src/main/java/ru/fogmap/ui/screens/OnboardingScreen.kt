@@ -2,6 +2,7 @@ package ru.fogmap.ui.screens
 
 import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
@@ -30,6 +31,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -59,9 +61,24 @@ fun OnboardingScreen(nav: NavController) {
     val fineLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted -> if (granted) step = 1 }
-    val bgLauncher = rememberLauncherForActivityResult(
+    val arLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { step = 2 }
+    val bgLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) {
+        // Переходы активности (motion-state 2.2): просим следом, отказ не мешает
+        // записи — остаются GPS, motion и WiFi.
+        if (Build.VERSION.SDK_INT >= 29 &&
+            ContextCompat.checkSelfPermission(
+                context, Manifest.permission.ACTIVITY_RECOGNITION
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            arLauncher.launch(Manifest.permission.ACTIVITY_RECOGNITION)
+        } else {
+            step = 2
+        }
+    }
     val prefs by app.container.dataStore.data.collectAsState(initial = preferencesOf())
     val notifLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()

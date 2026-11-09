@@ -166,4 +166,18 @@ class EcoLogPayloadTest {
         assertEquals(0L, p["static"])
         DevLog.buildPayloadJson(p)
     }
+@Test
+    fun `eco_state несет замер задержки старта движения`() {
+        // motion-state 3.2: idle_ms — сколько поездки не было видно до фикса.
+        val withIdle = EcoLogPayload.ecoStatePayload(
+            mode = "eco", profile = "BURST", fromProfile = "STANDBY",
+            wakeM = 0L, verdict = "MOVING", source = "ar", idleMs = 95_000L
+        )
+        assertEquals(95_000L, withIdle[EcoLogPayload.KEY_IDLE_MS])
+        val withoutIdle = EcoLogPayload.ecoStatePayload(
+            mode = "eco", profile = "ACTIVE", fromProfile = "BURST",
+            wakeM = 0L, verdict = "MOVING", source = "gps"
+        )
+        assertNull(withoutIdle[EcoLogPayload.KEY_IDLE_MS])
+    }
 }

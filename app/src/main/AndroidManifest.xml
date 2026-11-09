@@ -12,6 +12,10 @@
     <!-- Держим CPU только во время движения (field-hardening 1.1): без него
          таймеры записи встают в сне, и участок пути теряется. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Переходы активности (motion-state 2.1): ОС доставляет «встал/поехал»
+         сама, без запущенного процесса. -->
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+    <uses-permission android:name="com.google.android.gms.permission.ACTIVITY_RECOGNITION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
@@ -76,6 +80,15 @@
             android:exported="false">
             <intent-filter>
                 <action android:name="ru.fogmap.tracking.FIX" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Переходы активности (motion-state 2.1): только метка в процессе. -->
+        <receiver
+            android:name=".tracking.ActivityTransitionReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="ru.fogmap.tracking.ACTIVITY_TRANSITION" />
             </intent-filter>
         </receiver>
 

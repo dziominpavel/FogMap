@@ -69,11 +69,23 @@ object EcoGovernor {
         const val WIFI = "wifi"
         const val TIMEOUT = "timeout"
         const val RESTART = "restart"
+        /** Переход активности (motion-state): система доставляет сама. */
+        const val AR = "ar"
     }
 
-    fun paramsFor(p: Profile): FusedParams = when (p) {
+    /**
+     * Расслабленный STANDBY (motion-state 3.3): допустим ТОЛЬКО когда переходы
+     * активности реально доставляются — старт поездки тогда ловит AR, а не
+     * опрос. Без AR остаётся 60 с, иначе поездка начнётся с дырой.
+     */
+    const val STANDBY_RELAXED_INTERVAL_MS = 120_000L
+
+    fun standbyIntervalMs(arAvailable: Boolean): Long =
+        if (arAvailable) STANDBY_RELAXED_INTERVAL_MS else STANDBY_INTERVAL_MS
+
+    fun paramsFor(p: Profile, standbyIntervalMs: Long = STANDBY_INTERVAL_MS): FusedParams = when (p) {
         Profile.ACTIVE -> FusedParams(ACTIVE_INTERVAL_MS, ACTIVE_MIN_MS, ACTIVE_DIST_M, Priority.PRIORITY_HIGH_ACCURACY)
-        Profile.STANDBY -> FusedParams(STANDBY_INTERVAL_MS, STANDBY_MIN_MS, STANDBY_DIST_M, Priority.PRIORITY_HIGH_ACCURACY)
+        Profile.STANDBY -> FusedParams(standbyIntervalMs, STANDBY_MIN_MS, STANDBY_DIST_M, Priority.PRIORITY_HIGH_ACCURACY)
         Profile.BURST -> FusedParams(BURST_INTERVAL_MS, BURST_MIN_MS, BURST_DIST_M, Priority.PRIORITY_HIGH_ACCURACY)
     }
 

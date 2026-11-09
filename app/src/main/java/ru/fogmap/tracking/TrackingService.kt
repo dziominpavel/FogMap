@@ -71,6 +71,11 @@ class TrackingService : LifecycleService() {
     private var lastFixWallMs: Long = 0L
     @Volatile
     private var lastFixGapMs: Long = 0L
+    /** Единое состояние движения (motion-state 1.1). */
+    private val motion = MotionMachine()
+    /** Переходы активности доступны и подписаны (motion-state 2.2). */
+    @Volatile
+    private var arActive: Boolean = false
     /**
      * Сериализация flush (fix-import-metrics 1.2): периодический запуск и
      * запуск по переполнению буфера не должны идти одновременно.
@@ -242,6 +247,10 @@ class TrackingService : LifecycleService() {
             // разрешений, деградация к gps-слою при отсутствии железа.
             startMotionWake()
             startWifiWake()
+            // Переходы активности (motion-state 2.1/2.2): доступны не везде,
+            // отказ не ломает запись — остаются GPS, motion и WiFi.
+            arActive = ActivityTransitions.start(this@TrackingService)
+            DevLog.i("TRACK", "ar_subscribe", mapOf("ok" to if (arActive) 1 else 0))
             // ВРЕМЕННОЕ (dev-logging): чанк старта (только id, без координат).
             DevLog.i(
                 "TRACK", "day_chunk",
@@ -402,6 +411,15 @@ class TrackingService : LifecycleService() {
             val prevSnap = trustPrev
             val verdict = TrustEngine.evaluate(trustPrev, historySnap, hp)
             trustPrev = verdict.next
+            // Машина состояния (motion-state 1.1/3.1): одиночный правдоподобный
+            // фикс переводит в MOVING сразу — серия после тишины съедала минуты.
+            motion.onFix(
+                nowMs = nowMs,
+                speedMps = speedOrNull,
+                accM = if (loc.hasAccuracy()) loc.accuracy else null,
+                gapMs = lastFixGapMs,
+                intervalMs = currentIntervalMs()
+            )
             verdict.countReject?.let { key ->
                 rejected[key] = (rejected[key] ?: 0) + 1
             }
@@ -509,6 +527,50 @@ class TrackingService : LifecycleService() {
         state = state, trust = trust, openFog = openFog, rejectReason = rejectReason,
         history = history, prev = prev, recv = System.currentTimeMillis()
     )
+
+    /** Интервал текущего профиля с учётом доступности AR. */
+    private fun currentIntervalMs(): Long =
+        EcoGovernor.paramsFor(ecoProfile, EcoGovernor.standbyIntervalMs(arActive)).intervalMs
+
+    /**
+     * Переход активности → состояние (motion-state 2.1). Поднимает только темп:
+     * в BURST, подтверждение движения и открытие тумана остаются за вердиктом.
+     */
+    private fun applyActivitySignal() {
+        val activity = ActivitySignal.take() ?: return
+        val now = System.currentTimeMillis()
+        val (before, after) = synchronized(buffer) {
+            val b = motion.state
+            b to motion.onActivity(activity, now)
+        }
+        // Уже движемся — переход ничего не добавляет (тишина не рвёт поездку).
+        if (before == MotionState.MOVING) return
+        if (after != MotionState.MOVING) return
+        enterProfile(
+            EcoGovernor.Profile.BURST,
+            wakeM = EcoLogPayload.NO_ANCHOR_M,
+            verdict = "WAKE",
+            source = EcoGovernor.WakeSource.AR
+        )
+    }
+
+    /**
+     * План записи из состояния (motion-state 1.2/3.1): вверх в ACTIVE — сразу,
+     * вниз в STANDBY — только штатным дебаунсом эко-губернатора, иначе
+     * светофор ронял бы профиль в сон.
+     */
+    private fun applyMotion() {
+        val now = System.currentTimeMillis()
+        val state = synchronized(buffer) { motion.tick(now) }
+        if (state != MotionState.MOVING) return
+        if (ecoProfile == EcoGovernor.Profile.ACTIVE) return
+        enterProfile(
+            EcoGovernor.Profile.ACTIVE,
+            wakeM = EcoLogPayload.NO_ANCHOR_M,
+            verdict = "FAST",
+            source = EcoGovernor.WakeSource.GPS
+        )
+    }
 
     /**
      * Разбор журнала в живой конвейер (fix-journal D2/D4). Порядок — по метке
@@ -627,6 +689,10 @@ class TrackingService : LifecycleService() {
     /** Тело flush под [flushMutex]: чтение буферов, транзакция, метрики, лог. */
     private suspend fun flushLocked() {
         val container = (application as FogMapApp).container
+        // Активность и состояние движения разбираются до записи пачки
+        // (motion-state 2.1/3.1): переход поднимает темп в пределах тика.
+        applyActivitySignal()
+        applyMotion()
         // Журнал первичен (fix-journal D2/D4): то, что система успела доставить,
         // разбирается до записи пачки — иначе фиксы ждали бы следующего тика.
         drainInbox()
@@ -1091,7 +1157,8 @@ class TrackingService : LifecycleService() {
      * внутри живого сервиса. Заморозка процесса больше не теряет приём.
      */
     private fun subscribeFused(profile: EcoGovernor.Profile = EcoGovernor.Profile.ACTIVE) {
-        val params = EcoGovernor.paramsFor(profile)
+        // STANDBY расслабляется только при живых переходах активности (motion-state 3.3).
+        val params = EcoGovernor.paramsFor(profile, EcoGovernor.standbyIntervalMs(arActive))
         val request = LocationRequest.Builder(params.priority, params.intervalMs)
             .setMinUpdateIntervalMillis(params.minIntervalMs)
             .setMinUpdateDistanceMeters(params.distanceM)
@@ -1445,6 +1512,7 @@ class TrackingService : LifecycleService() {
         stopHeartbeat()
         stopMotionWake()
         stopWifiWake()
+        ActivityTransitions.stop(this)
         runCatching {
             LocationServices.getFusedLocationProviderClient(this)
                 .removeLocationUpdates(fixPendingIntent())

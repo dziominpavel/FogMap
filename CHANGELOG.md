@@ -6,6 +6,7 @@
 ## [Unreleased]
 
 **Добавлено**
+- Поездка больше не начинается с дыры: движение замечается по переходу активности и первому фиксу, а не через 2–3 минуты.
 - Фиксы геолокации больше не теряются, если система заморозила приложение: они копятся в журнале и разбираются при пробуждении.
 
 **Исправлено**
@@ -13,6 +14,12 @@
 - День в истории показывает, сколько фиксов ещё ждёт обработки, вместо тишины.
 
 ### Добавлено
+
+- Change: `adaptive-motion-state`.
+- `MotionMachine` (`tracking/MotionState.kt`): одно состояние `STILL/MOVING/UNKNOWN`, план записи `planFor` — профиль и wake-lock из состояния; fast-path по одиночному правдоподобному фиксу (`acc ≤ 25`, `speed ≥ 1`) вместо раскачки серией.
+- `ActivityTransitions` + `ActivityTransitionReceiver`: переходы активности через PendingIntent (`ar` в источниках пробуждения), разрешение `ACTIVITY_RECOGNITION` спрашивается в онбординге, без него — `TRACK/wake_source_unavailable`.
+- `EcoGovernor.standbyIntervalMs(arAvailable)`: STANDBY 120 с только при живых переходах, иначе 60 с.
+- Тесты: `MotionStateTest` (8), `EcoLogPayloadTest` (+1 idle_ms); `:app:testDebugUnitTest` — 322, 0 падений.
 
 - Change: `durable-tracking-pipeline`.
 - `fix_inbox` (Room v8): приём фиксов через `PendingIntent` + `LocationFixReceiver`, уникальный ключ `fix_time|lat|lon` — повторная доставка не создаёт строку. Даты точки и ключ считает `FixEnvelope` один раз при приёме.
