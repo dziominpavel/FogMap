@@ -26,6 +26,10 @@ import ru.fogmap.ui.theme.FogMapTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Открытие приложения возвращает запись (поле 09–12.11): система
+        // останавливала трекинг и сама его больше не поднимала; заход в
+        // приложение — самый очевидный для владельца способ это починить.
+        runCatching { ru.fogmap.tracking.TrackingService.start(this, via = "ui") }
         setContent {
             // Тема из DataStore: смена применяется рекомпозицией, без перезапуска.
             val app = application as FogMapApp
