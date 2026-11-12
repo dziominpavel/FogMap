@@ -1,4 +1,4 @@
-﻿# Единый release-скрипт проекта: готовит и публикует релиз GitHub Release.
+# Единый release-скрипт проекта: готовит и публикует релиз GitHub Release.
 #
 # Версия скрипта печатается при каждом запуске — по ней контролируется расхождение
 # копий между репозиториями (разнос копий — см. scripts/sync-release.ps1 в репо витрины).
@@ -408,7 +408,12 @@ if (-not (Test-Path $DistDir)) {
 }
 # Только верхний уровень dist/: подпапки (напр. dist/archive) — исторические.
 $TopFiles = @(Get-ChildItem -Path $DistDir -File)
-$Assets = @($TopFiles | Where-Object { $_.Extension -match '^\.(apk|zip|exe)$' })
+# Отладочные сборки в релиз не едут: они попадали в список и приводили к
+# коллизии имён ("два ассета к одному имени FogMap-x.y.z.apk") — релиз 1.9.1
+# упал именно на этом после `build-apk.bat debug`.
+$Assets = @($TopFiles | Where-Object {
+    $_.Extension -match '^\.(apk|zip|exe)$' -and $_.Name -notmatch '(?i)-debug'
+})
 if ($Assets.Count -eq 0) {
     Fail "Папка dist/ пуста (нет ассетов .apk/.zip/.exe). Тег и релиз НЕ создаются."
 }
