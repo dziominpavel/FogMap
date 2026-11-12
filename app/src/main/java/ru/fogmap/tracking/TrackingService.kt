@@ -69,6 +69,9 @@ class TrackingService : LifecycleService() {
     /** Замер старта движения: момент и зазор до предыдущего фикса (adaptive-motion-state). */
     @Volatile
     private var lastFixWallMs: Long = 0L
+    /** Метка времени предыдущего фикса: база замера зазора (motion-state 3.2). */
+    @Volatile
+    private var lastFixTimeMs: Long = 0L
     @Volatile
     private var lastFixGapMs: Long = 0L
     /** Единое состояние движения (motion-state 1.1). */
@@ -267,10 +270,12 @@ class TrackingService : LifecycleService() {
     }
 
     private fun onRawLocation(loc: Location) {
-        // Замер задержки старта движения: зазор до предыдущего фикса. После
-        // разморозки он и есть «сколько поездки мы не видели».
+        // Замер задержки старта движения: зазор по МЕТКАМ фиксов, а не по
+        // часам приёма. Пачка после разморозки приходит одной секундой, и
+        // «по приёму» зазор был бы нулевым — замер терял смысл (поле 10.11).
         val nowFix = System.currentTimeMillis()
-        lastFixGapMs = if (lastFixWallMs > 0) nowFix - lastFixWallMs else 0L
+        lastFixGapMs = if (lastFixTimeMs > 0) (loc.time - lastFixTimeMs).coerceAtLeast(0L) else 0L
+        lastFixTimeMs = loc.time
         lastFixWallMs = nowFix
         @Suppress("DEPRECATION")
         val isMock = if (Build.VERSION.SDK_INT >= 31) loc.isMock else loc.isFromMockProvider
@@ -1527,11 +1532,26 @@ class TrackingService : LifecycleService() {
     // --- Статусное уведомление «пишет трек» (trust-v2 4.1: без действий,
     // пауза только из Настроек) ---
 
+    /**
+     * Канал уведомления записи. IMPORTANCE_MIN — самый тихий режим, который
+     * вообще существует: без иконки в строке состояния, без звука и вибрации,
+     * строкой в самом низу шторки. Полностью убрать уведомление нельзя:
+     * Android требует его у любой foreground-службы.
+     *
+     * Важность канала неизменяема после создания, поэтому канал пересоздан
+     * под новым id, а старый удаляется.
+     */
     private fun ensureChannel() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.createNotificationChannel(
-            NotificationChannel(CHANNEL, "Трекинг", NotificationManager.IMPORTANCE_LOW)
-        )
+        runCatching { nm.deleteNotificationChannel(CHANNEL_OLD) }
+        val channel = NotificationChannel(CHANNEL, "Запись трека", NotificationManager.IMPORTANCE_MIN)
+            .apply {
+                setShowBadge(false)
+                enableVibration(false)
+                setSound(null, null)
+                lockscreenVisibility = Notification.VISIBILITY_SECRET
+            }
+        nm.createNotificationChannel(channel)
     }
 
     private fun buildNotification(paused: Boolean): Notification {
@@ -1547,6 +1567,18 @@ class TrackingService : LifecycleService() {
             .setSmallIcon(R.drawable.ic_stat_fog)
             .setContentIntent(openApp)
             .setOngoing(true)
+            .setSilent(true)
+            .setShowWhen(false)
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
+            // Страховка на OEM, где «несмахиваемое» всё же смахивается:
+            // снятие уведомления не должно тихо останавливать запись.
+            .setDeleteIntent(
+                PendingIntent.getBroadcast(
+                    this, 3, Intent(this, NotificationDismissReceiver::class.java),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+            )
             .build()
     }
 
@@ -1564,7 +1596,9 @@ class TrackingService : LifecycleService() {
     }
 
     companion object {
-        const val CHANNEL = "tracking"
+        const val CHANNEL = "tracking_v2"
+    /** Старый канал с IMPORTANCE_LOW удаляется при создании нового. */
+    const val CHANNEL_OLD = "tracking"
         const val NOTIF_ID = 41
         /** Flush-интервал (tracking-reliability 2.1): потери при убийстве — не больше него. */
         const val FLUSH_INTERVAL_MS = 15_000L

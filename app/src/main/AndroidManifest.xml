@@ -83,6 +83,11 @@
             </intent-filter>
         </receiver>
 
+        <!-- Снятие уведомления записи не должно останавливать трекинг. -->
+        <receiver
+            android:name=".tracking.NotificationDismissReceiver"
+            android:exported="false" />
+
         <!-- Переходы активности (motion-state 2.1): только метка в процессе. -->
         <receiver
             android:name=".tracking.ActivityTransitionReceiver"
