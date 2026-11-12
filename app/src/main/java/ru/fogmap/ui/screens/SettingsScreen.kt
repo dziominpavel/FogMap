@@ -1,5 +1,7 @@
 package ru.fogmap.ui.screens
 
+import android.content.Intent
+import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -158,6 +160,28 @@ fun SettingsScreen(nav: NavController) {
                     OutlinedButton(onClick = { nav.navigate("bg-health") }) {
                         Text("Проверить")
                     }
+                    Spacer(Modifier.height(8.dp))
+                    // Уведомление foreground-службы обязательно по правилам
+                    // Android, но его можно выключить в системных настройках —
+                    // запись от этого не останавливается.
+                    OutlinedButton(onClick = {
+                        runCatching {
+                            context.startActivity(
+                                Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                                    .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                                    .putExtra(
+                                        Settings.EXTRA_CHANNEL_ID,
+                                        ru.fogmap.tracking.TrackingService.CHANNEL
+                                    )
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
+                        }
+                    }) { Text("Уведомление записи") }
+                    Text(
+                        "Уведомление обязательно, пока идёт фоновая запись. Здесь его можно " +
+                            "выключить совсем — трекинг продолжит работать.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
                 }
             }
             // --- Диагностика (ВРЕМЕННОЕ, dev-logging: удалить вместе с change) ---
