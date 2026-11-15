@@ -1,9 +1,11 @@
 package ru.fogmap.tracking
 
 /**
- * Состав диагностических payload (battery-eco-logging-gap, чистый объект).
- * Один JSONL самодостаточен для сверки сна/пробуждений с треком:
- * flush несет эко-снимок пачки, eco_state — причину перехода.
+ * Состав диагностических payload (change recording-mode, dev-logging).
+ *
+ * Один JSONL самодостаточен для сверки записи: flush несет счётчики пачки,
+ * no_fix — фактическую длительность тишины, day_stats — дневные счётчики.
+ * Эко-полей (профиль, префикс, переходы) больше нет: режим один.
  * Координат нет по построению: только счетчики, метры и имена.
  */
 object EcoLogPayload {
@@ -12,29 +14,11 @@ object EcoLogPayload {
     const val KEY_TXN_MS = "txn_ms"
     const val KEY_NEW_CELLS = "new_cells"
     const val KEY_MODE = "mode"
-    const val KEY_PROFILE = "profile"
     const val KEY_ECO_FIX = "eco_fix"
     const val KEY_ECO_STAND = "eco_stand"
     const val KEY_ECO_GPS_MS = "eco_gps_ms"
-    const val KEY_FROM_PROFILE = "from_profile"
-    const val KEY_WAKE_M = "wake_m"
-    const val KEY_VERDICT = "verdict"
-    /** Замер задержки старта движения (adaptive-motion-state). */
-    const val KEY_IDLE_MS = "idle_ms"
-    /** Источник пробуждения (wake-balance-parking 4.1): gps/motion/wifi/timeout/restart. */
-    const val KEY_SOURCE = "source"
-    /**
-     * Пер-эвентный префикс (fix-eco-signal-loss 4.1/4.2): длина и источник
-     * (anchor — пробуждение от якоря, gap — разрыв после тишины).
-     */
-    const val KEY_PREFIX_M = "prefix_m"
-    const val KEY_PREFIX_SRC = "prefix_src"
-    const val PREFIX_SRC_ANCHOR = "anchor"
-    const val PREFIX_SRC_GAP = "gap"
-    /** Фактическая длительность тишины Fused (fix-eco-signal-loss 3.1). */
+    /** Фактическая длительность тишины Fused. */
     const val KEY_GAP_MS = "gap_ms"
-    /** Окно BURST wifi/motion, мс (fix-walk-fog-verdict 5.3: 180_000). */
-    const val KEY_BURST_WINDOW_MS = "burst_window_ms"
     /** Время с прошлого тика записи (fix-track-gap-visibility 4.2), мс. */
     const val KEY_SINCE_LAST_MS = "since_last_ms"
     /** Абсолютная монотонная шкала загрузки (fix-track-gap-visibility 4.2). */
@@ -51,21 +35,15 @@ object EcoLogPayload {
     const val KEY_VIA = "via"
     const val REJ_PREFIX = "rej_"
 
-    /** Нет якоря / неприменимо (wake_m): число, а не null — парсер проще. */
-    const val NO_ANCHOR_M = -1L
-
     fun flushPayload(
         batch: Int,
         rejected: Long,
         txnMs: String,
         newCells: Int,
         mode: String,
-        profile: String,
         ecoFix: Long,
         ecoStand: Long,
         ecoGpsMs: Long,
-        prefixM: Long? = null,
-        prefixSrc: String? = null,
         sinceLastMs: Long? = null,
         bootMonoMs: Long? = null,
         staleReplay: Long? = null
@@ -75,12 +53,9 @@ object EcoLogPayload {
         KEY_TXN_MS to txnMs,
         KEY_NEW_CELLS to newCells,
         KEY_MODE to mode,
-        KEY_PROFILE to profile,
         KEY_ECO_FIX to ecoFix,
         KEY_ECO_STAND to ecoStand,
         KEY_ECO_GPS_MS to ecoGpsMs,
-        KEY_PREFIX_M to prefixM,
-        KEY_PREFIX_SRC to prefixSrc,
         KEY_SINCE_LAST_MS to sinceLastMs,
         KEY_BOOT_MONO_MS to bootMonoMs,
         KEY_STALE_REPLAY to staleReplay
@@ -111,52 +86,11 @@ object EcoLogPayload {
         if (via != null) put(KEY_VIA, via)
     }
 
-    /** Тишина Fused (fix-eco-signal-loss 3.1): фактическая длительность, не порог. */
-    fun noFixPayload(gapMs: Long, mode: String, profile: String): Map<String, Any?> = mapOf(
+    /** Тишина Fused: фактическая длительность интервала, а не порог. */
+    fun noFixPayload(gapMs: Long, mode: String): Map<String, Any?> = mapOf(
         KEY_GAP_MS to gapMs,
-        KEY_MODE to mode,
-        KEY_PROFILE to profile
+        KEY_MODE to mode
     )
-
-    /**
-     * Источник спрямления (fix-eco-signal-loss 4.1): якорь пробуждения идет
-     * в бюджет префикса, разрыв после тишины — в отдельную метрику, мелочь
-     * (меньше 50 м или межбатчевые секунды) не считается вовсе. Чистая,
-     * тестируется без Android.
-     */
-    fun prefixKind(hasAnchor: Boolean, distanceM: Double, gapS: Long): String? = when {
-        hasAnchor && distanceM >= 50.0 -> PREFIX_SRC_ANCHOR
-        !hasAnchor && distanceM >= 50.0 && gapS >= 60 -> PREFIX_SRC_GAP
-        else -> null
-    }
-
-    fun ecoStatePayload(
-        mode: String,
-        profile: String,
-        fromProfile: String,
-        wakeM: Long?,
-        verdict: String?,
-        source: String? = null,
-        /**
-         * Сколько прошло между предыдущим фиксом и тем, что разбудил профиль
-         * (adaptive-motion-state, замер): цена задержки старта движения.
-         */
-        idleMs: Long? = null
-    ): Map<String, Any?> = buildMap {
-        put(KEY_MODE, mode)
-        put(KEY_PROFILE, profile)
-        put(KEY_FROM_PROFILE, fromProfile)
-        put(KEY_WAKE_M, wakeM ?: NO_ANCHOR_M)
-        put(KEY_VERDICT, verdict ?: "?")
-        val src = source ?: EcoGovernor.WakeSource.GPS
-        put(KEY_SOURCE, src)
-        // fix-walk-fog-verdict 5.3: wifi/motion-BURST несет окно 180с.
-        if (src == EcoGovernor.WakeSource.WIFI || src == EcoGovernor.WakeSource.MOTION) {
-            put(KEY_BURST_WINDOW_MS, EcoGovernor.BURST_WINDOW_MS)
-        }
-        // Замер старта движения: сколько мы не знали о движении до этого фикса.
-        if (idleMs != null && idleMs > 0) put(KEY_IDLE_MS, idleMs)
-    }
 
     /**
      * Счётчики веток TrustEngine (tracking-reliability): все ключи видимы,

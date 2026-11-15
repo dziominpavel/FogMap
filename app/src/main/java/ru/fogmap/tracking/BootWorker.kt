@@ -38,8 +38,8 @@ class BootWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
             return Result.success()
         }
         val app = applicationContext as? FogMapApp ?: return Result.failure()
-        val paused = app.container.dataStore.data.first()[PrefsKeys.PAUSED] ?: false
-        Log.i(TAG, "boot-restart: paused=$paused")
+        val recording = app.container.settingsRepository.recordingEnabled.first()
+        Log.i(TAG, "boot-restart: recording=$recording")
         // Watchdog на случай будущих убийств (tracking-reliability 2.2).
         // Два канала (fix-track-reliability-0928); KEEP-политика делает
         // повторное расписание no-op. Исход внутри scheduleAll() пишет сам;
@@ -55,11 +55,13 @@ class BootWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                     )
                 )
             }
-        if (paused) return Result.success()
-        val play = TrackingPreconditions.playServicesAvailable(applicationContext)
-        val track = TrackingService.canTrack(applicationContext)
-        Log.i(TAG, "boot-restart: play=$play canTrack=$track")
-        if (!play || !track) return Result.success()
+        val decision = RecordingGate.decide(
+            recording = recording,
+            playServices = TrackingPreconditions.playServicesAvailable(applicationContext),
+            canTrack = TrackingService.canTrack(applicationContext)
+        )
+        Log.i(TAG, "boot-restart: decision=" + RecordingGate.outcomeName(decision))
+        if (decision != RecordingGate.Decision.START) return Result.success()
         return try {
             TrackingService.start(applicationContext, via = via)
             Log.i(TAG, "boot-restart: TrackingService.start called")

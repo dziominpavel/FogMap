@@ -47,7 +47,6 @@ class LocationFixReceiver : BroadcastReceiver() {
                 } else {
                     runCatching {
                         FixInboxWriter.write(app.container.db, envelopes)
-                        FixInboxWriter.prune(app.container.db, now)
                     }.onFailure {
                         DevLog.w(
                             "TRACK", "inbox_write_failed",

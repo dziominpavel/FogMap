@@ -2,7 +2,6 @@ package ru.fogmap.ui.screens
 
 import android.Manifest
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
@@ -31,7 +30,6 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.core.content.ContextCompat
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -44,6 +42,7 @@ import ru.fogmap.FogMapApp
 import ru.fogmap.R
 import ru.fogmap.data.PrefsKeys
 import ru.fogmap.tracking.TrackingService
+import ru.fogmap.ui.RecordingControls
 import ru.fogmap.ui.NotifPermission
 
 /**
@@ -61,24 +60,9 @@ fun OnboardingScreen(nav: NavController) {
     val fineLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted -> if (granted) step = 1 }
-    val arLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { step = 2 }
     val bgLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) {
-        // Переходы активности (motion-state 2.2): просим следом, отказ не мешает
-        // записи — остаются GPS, motion и WiFi.
-        if (Build.VERSION.SDK_INT >= 29 &&
-            ContextCompat.checkSelfPermission(
-                context, Manifest.permission.ACTIVITY_RECOGNITION
-            ) != PackageManager.PERMISSION_GRANTED
-        ) {
-            arLauncher.launch(Manifest.permission.ACTIVITY_RECOGNITION)
-        } else {
-            step = 2
-        }
-    }
+    ) { step = 2 }
     val prefs by app.container.dataStore.data.collectAsState(initial = preferencesOf())
     val notifLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -99,7 +83,7 @@ fun OnboardingScreen(nav: NavController) {
     val bodies = listOf(
         "Нужна, чтобы открывать туман по вашим прогулкам",
         "Нужна, чтобы трек писался в фоне",
-        "Отключите оптимизацию батареи и разрешите автозапуск (Xiaomi/Huawei), иначе система будет убивать трекинг. В покое трекер спит и просыпается от шагов, выхода из WiFi или движения — отдельных разрешений для этого не нужно, без WiFi будят шаги и GPS. Сейчас система спросит разрешение на уведомление: по нему видно, что запись идёт (без него трекер тоже работает)"
+        "Отключите оптимизацию батареи и разрешите автозапуск (Xiaomi/Huawei), иначе система будет убивать трекинг. Запись включается одним тумблером в Настройках или на карте; пока она включена, приложение опрашивает геолокацию постоянно и держит процесс — батарея расходуется заметнее, поэтому вне поездок тумблер можно выключать. Сейчас система спросит разрешение на уведомление: по нему видно, что запись идёт (без него трекер тоже работает)"
     )
     val illustrations = listOf(
         R.drawable.img_onboarding_geo,
@@ -157,6 +141,11 @@ fun OnboardingScreen(nav: NavController) {
                         }
                         scope.launch {
                             app.container.settingsRepository.setOnboardingDone()
+                            // Чистая установка: запись включена (change recording-mode),
+                            // но только если обязательные разрешения реально выданы.
+                            if (RecordingControls.canEnable(context)) {
+                                app.container.settingsRepository.setRecordingEnabled(true)
+                            }
                             runCatching { TrackingService.start(context, via = "onboarding") }
                             nav.navigate("map") { popUpTo("onboarding") { inclusive = true } }
                         }

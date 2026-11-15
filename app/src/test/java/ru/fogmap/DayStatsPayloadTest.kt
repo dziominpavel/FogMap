@@ -19,9 +19,8 @@ class DayStatsPayloadTest {
     fun `flush несет since_last_ms и boot_mono_ms`() {
         val p = EcoLogPayload.flushPayload(
             batch = 2, rejected = 0, txnMs = "8.0", newCells = 5,
-            mode = "eco", profile = "BURST",
+            mode = "hard",
             ecoFix = 10, ecoStand = 2, ecoGpsMs = 15_000,
-            prefixM = 150L, prefixSrc = EcoLogPayload.PREFIX_SRC_ANCHOR,
             sinceLastMs = 1_201_000L, bootMonoMs = 26_054_145L
         )
         assertEquals(1_201_000L, p[EcoLogPayload.KEY_SINCE_LAST_MS] as Long)
@@ -35,7 +34,7 @@ class DayStatsPayloadTest {
     fun `flush без новых полей не ломает старую строку`() {
         val p = EcoLogPayload.flushPayload(
             batch = 1, rejected = 0, txnMs = "6.0", newCells = 0,
-            mode = "eco", profile = "STANDBY",
+            mode = "hard",
             ecoFix = 1, ecoStand = 0, ecoGpsMs = 30_000
         )
         // null-поля выкидываются сериализатором: строка не пухнет.
@@ -103,7 +102,7 @@ class DayStatsPayloadTest {
 
     @Test
     fun `no_fix несет фактическую длительность а не порог`() {
-        val p = EcoLogPayload.noFixPayload(13_560_000L, "eco", "STANDBY")
+        val p = EcoLogPayload.noFixPayload(13_560_000L, "hard")
         val json = DevLog.buildPayloadJson(p)
         assertTrue(json.contains("13560000"))
     }

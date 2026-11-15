@@ -44,7 +44,7 @@ class TrustEngineTest {
     fun `холодный старт — стоим, туман закрыт, счетчиков нет`() {
         val v = run(listOf(pt(53.9))).single()
         assertEquals(TrustEngine.State.STAND, v.state)
-        assertFalse(v.openFog)
+        assertTrue(v.openFog)
         assertNull(v.countReject)
     }
 
@@ -57,7 +57,7 @@ class TrustEngineTest {
         val verdicts = run(office + teleport)
         val v = verdicts.last()
         assertEquals(TrustEngine.State.SUSPECT, v.state)
-        assertFalse(v.openFog)
+        assertTrue(v.openFog)
         assertEquals(FogRepository.REJECT_JUMP, v.countReject)
     }
 
@@ -70,7 +70,7 @@ class TrustEngineTest {
         // Обратная нога сама 4 км, но возврат в якорь важнее телепорта.
         val vBack = verdicts.last()
         assertEquals(TrustEngine.State.STAND, vBack.state)
-        assertFalse(vBack.openFog)
+        assertTrue(vBack.openFog)
     }
 
     @Test
@@ -116,7 +116,7 @@ class TrustEngineTest {
         val verdicts = run(office + same)
         val v = verdicts.last()
         assertEquals(TrustEngine.State.STAND, v.state)
-        assertFalse(v.openFog)
+        assertTrue(v.openFog)
         assertNull(v.countReject)
     }
 
@@ -128,11 +128,11 @@ class TrustEngineTest {
         val verdicts = run(office + jump + back)
         val vJump = verdicts[6]
         assertEquals(TrustEngine.State.SUSPECT, vJump.state)
-        assertFalse(vJump.openFog)
+        assertTrue(vJump.openFog)
         assertEquals(FogRepository.REJECT_JUMP, vJump.countReject)
         val vBack = verdicts[7]
         assertEquals(TrustEngine.State.STAND, vBack.state)
-        assertFalse(vBack.openFog)
+        assertTrue(vBack.openFog)
     }
 
     @Test
@@ -155,7 +155,7 @@ class TrustEngineTest {
         val verdicts = run(series)
         val last = verdicts.last()
         assertEquals(TrustEngine.State.STAND, last.state)
-        assertFalse(last.openFog)
+        assertTrue(last.openFog)
         assertNull(last.countReject)
     }
 
@@ -179,7 +179,7 @@ class TrustEngineTest {
         val verdicts = run(north + south)
         val v = verdicts.last()
         assertEquals(TrustEngine.State.SUSPECT, v.state)
-        assertFalse(v.openFog)
+        assertTrue(v.openFog)
     }
 
     @Test
@@ -273,7 +273,7 @@ class TrustEngineTest {
         val verdicts = run(stand + listOf(far))
         val v = verdicts.last()
         assertEquals(TrustEngine.State.SUSPECT, v.state)
-        assertFalse(v.openFog)
+        assertTrue(v.openFog)
         assertEquals(FogRepository.REJECT_JUMP, v.countReject)
     }
 
@@ -305,7 +305,7 @@ class TrustEngineTest {
             "стоянка не должна выбиваться джиттером",
             verdicts.drop(45).all { it.state == TrustEngine.State.STAND }
         )
-        assertFalse(verdicts.last().openFog)
+        assertTrue(verdicts.last().openFog)
         assertNull(verdicts.last().countReject)
     }
 
@@ -349,10 +349,10 @@ class TrustEngineTest {
 
     @Test
     fun `speed гейт 1_0 запрещает STAND и не открывает туман в одиночку`() {
-        // 1.1/1.3: speed≥1 при acc≤25 → STAND невозможен, openFog=false.
+        // 1.1/1.3: speed≥1 при acc≤25 → STAND невозможен; туман открывается всегда.
         val v = TrustEngine.evaluate(null, emptyList(), ptSpeed(53.9, speed = 1.0f))
         assertEquals(TrustEngine.State.MOVING, v.state)
-        assertFalse(v.openFog)
+        assertTrue(v.openFog)
         assertTrue("speed_gate в ветках: ${v.branches}", "speed_gate" in v.branches)
         assertEquals(ru.fogmap.tracking.MotionKind.WALK, v.kind)
     }
@@ -370,7 +370,7 @@ class TrustEngineTest {
         val dirty = ptSpeed(53.9, speed = 1.0f, acc = 30f)
         val v = TrustEngine.evaluate(prev, history, dirty)
         assertEquals(TrustEngine.State.STAND, v.state)
-        assertFalse(v.openFog)
+        assertTrue(v.openFog)
         assertFalse("speed_gate при acc>25", "speed_gate" in v.branches)
     }
 
@@ -380,7 +380,7 @@ class TrustEngineTest {
         // классификация падает на prev — здесь проверяем через speed.
         val still = TrustEngine.evaluate(null, emptyList(), ptSpeed(53.9, speed = null))
         assertEquals(TrustEngine.State.STAND, still.state)
-        // Явная ходьба в статике: kind=WALK → MOVING без авт-openFog.
+        // Явная ходьба в статике: kind=WALK → MOVING (туман открыт по новому контракту).
         var prev: TrustEngine.PrevState? = null
         val history = ArrayList<TrustEngine.HistPoint>()
         val stand = ptSpeed(53.9, speed = 0.1f)
@@ -390,7 +390,7 @@ class TrustEngineTest {
         val walk = ptSpeed(53.9 + 0.00002, speed = 1.5f)
         val v1 = TrustEngine.evaluate(prev, history, walk)
         assertEquals(TrustEngine.State.MOVING, v1.state)
-        assertFalse(v1.openFog)
+        assertTrue(v1.openFog)
         assertEquals(ru.fogmap.tracking.MotionKind.WALK, v1.kind)
     }
 

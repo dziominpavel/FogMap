@@ -56,8 +56,9 @@ object FogGrid {
     const val RADIUS_FAST_M = 100.0
 
     /**
-     * Пороги доверия (контракт с gps-trust-filter, единое место).
-     * TRUST_OPEN — ниже туман не открываем; TRUST_HIGH — ниже только минимум.
+     * Пороги доверия. С change recording-mode доверие не решает, открывать ли
+     * туман: TRUST_HIGH используется только как «полная кисть» в
+     * [brushRadiusBySpeed], TRUST_OPEN — для диагностики и старых данных.
      */
     const val TRUST_OPEN = 30
     const val TRUST_HIGH = 70
@@ -133,7 +134,25 @@ object FogGrid {
         return base
     }
 
-    /** Круг ячеек базы вокруг точки радиусом по скорости (без ворот доверия). */
+    /**
+     * Кисть без ворот доверия (change recording-mode, D5): при [TRUST_HIGH]
+     * адаптивная кисть вырождается в «радиус по скорости с accuracy-капом» —
+     * отдельная реализация правила была бы второй копией порога.
+     */
+    fun brushRadiusBySpeed(speedMs: Float?, accuracy: Float?): Double =
+        brushRadius(speedMs, TRUST_HIGH, accuracy) ?: radiusForSpeed(speedMs)
+
+    /**
+     * Клетки кисти точки. Круг и коридор считаются ОДНИМ радиусом: иначе
+     * площадь тумана зависела бы от того, чем точку соединили с соседней.
+     */
+    fun cellsForBrush(lat: Double, lon: Double, speedMs: Float?, accuracy: Float?): Set<Cell> =
+        cellsWithRadius(lat, lon, brushRadiusBySpeed(speedMs, accuracy))
+
+    /**
+     * Круг ячеек вокруг точки радиусом по скорости, без accuracy-капа: нужен
+     * экранной «показной дырке» вокруг живого фикса, где точность неизвестна.
+     */
     fun cellsAround(lat: Double, lon: Double, speedMs: Float?): Set<Cell> =
         cellsWithRadius(lat, lon, radiusForSpeed(speedMs))
 

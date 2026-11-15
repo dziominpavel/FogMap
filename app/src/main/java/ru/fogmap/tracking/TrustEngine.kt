@@ -184,14 +184,14 @@ object TrustEngine {
         if (!speedGate && kind == MotionKind.STILL) {
             val next = PrevState(State.STAND, standTrust, kind = kind)
             return Verdict(
-                State.STAND, standTrust, false, null, next,
+                State.STAND, standTrust, true, null, next,
                 branches = branches, kind = kind
             )
         }
         val b = if (speedGate) branches + "speed_gate" else branches
         val next = PrevState(State.MOVING, standTrust, kind = kind)
         return Verdict(
-            State.MOVING, standTrust, false, null, next,
+            State.MOVING, standTrust, true, null, next,
             branches = b, kind = kind
         )
     }
@@ -307,7 +307,7 @@ object TrustEngine {
                     kind = kind
                 )
                 return Verdict(
-                    State.SUSPECT, TRUST_SUSPECT, false, FogRepository.REJECT_JUMP, next,
+                    State.SUSPECT, TRUST_SUSPECT, true, FogRepository.REJECT_JUMP, next,
                     branches = setOf("teleport"), kind = kind
                 )
             }
@@ -348,7 +348,7 @@ object TrustEngine {
                 if (headingSuspect) add("turn")
             }
             return Verdict(
-                State.SUSPECT, TRUST_SUSPECT, false, FogRepository.REJECT_JUMP, next,
+                State.SUSPECT, TRUST_SUSPECT, true, FogRepository.REJECT_JUMP, next,
                 branches = branches, kind = kind
             )
         }
@@ -359,7 +359,9 @@ object TrustEngine {
         return afterSilence(
             when (prev?.state) {
                 State.MOVING -> {
-                    val open = trust >= FogGrid.TRUST_OPEN
+                    // Туман открывает каждая принятая точка (change recording-mode,
+                    // D6): доверие остаётся диагностикой, а не воротами.
+                    val open = true
                     val b = if (speedGate) setOf("speed_gate") else emptySet()
                     Verdict(
                         State.MOVING, trust, open, null,
@@ -375,7 +377,7 @@ object TrustEngine {
                     // никогда не наберет 5 точек).
                     // Speed-гейт/kind!=STILL: STAND невозможен → MOVING без авт-openFog.
                     if (implied > 0.5 || speedGate || kind != MotionKind.STILL) {
-                        val open = !speedGate && trust >= FogGrid.TRUST_OPEN
+                        val open = true
                         val b = if (speedGate) setOf("speed_gate") else emptySet()
                         Verdict(
                             State.MOVING, trust, open, null,
@@ -426,7 +428,9 @@ object TrustEngine {
         val next = PrevState(v.next.state, TRUST_START, kind = v.next.kind)
         return v.copy(
             trust = TRUST_START,
-            openFog = v.state == State.MOVING,
+            // Тишина не закрывает туман (change recording-mode, D6): принятая
+            // точка открывает клетки и после долгого молчания провайдера.
+            openFog = true,
             next = next,
             branches = v.branches + "silence"
         )

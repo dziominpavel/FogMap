@@ -38,26 +38,32 @@ class BootReceiver : BroadcastReceiver() {
         // Позже окно закрывается и старт location-FGS из фона запрещен (API 34+),
         // поэтому никаких корутин здесь — только быстрый синхронный код.
         runCatching {
-            val paused = runBlocking {
+            // Не смогли прочитать настройку — не глушим запись молча.
+            val recording = runBlocking {
                 withTimeoutOrNull(3000L) {
                     val app = context.applicationContext as? FogMapApp
-                    app?.container?.dataStore?.data?.first()?.get(PrefsKeys.PAUSED)
+                    app?.container?.settingsRepository?.recordingEnabled?.first()
                 }
-            } ?: false
-            when {
-                paused -> DevLog.i(
+            } ?: true
+            val decision = RecordingGate.decide(
+                recording = recording,
+                playServices = TrackingPreconditions.playServicesAvailable(context),
+                canTrack = TrackingService.canTrack(context)
+            )
+            when (decision) {
+                RecordingGate.Decision.START -> TrackingService.start(context, via = via)
+                RecordingGate.Decision.SKIP_DISABLED -> DevLog.i(
                     "TRACK", "restart_skip",
-                    mapOf("via" to via, "reason" to "paused")
+                    mapOf("via" to via, "reason" to "disabled")
                 )
-                !TrackingPreconditions.playServicesAvailable(context) -> DevLog.w(
+                RecordingGate.Decision.SKIP_PLAY_SERVICES -> DevLog.w(
                     "TRACK", "restart_skip",
                     mapOf("via" to via, "reason" to "no_play_services")
                 )
-                !TrackingService.canTrack(context) -> DevLog.w(
+                RecordingGate.Decision.SKIP_NO_PERMISSION -> DevLog.w(
                     "TRACK", "restart_skip",
                     mapOf("via" to via, "reason" to "no_permission")
                 )
-                else -> TrackingService.start(context, via = via)
             }
         }.onFailure {
             // Отказы самого start() уже записаны в start_attempt; сюда

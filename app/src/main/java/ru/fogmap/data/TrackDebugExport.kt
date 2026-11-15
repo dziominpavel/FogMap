@@ -5,7 +5,6 @@ import ru.fogmap.data.db.TrackPointEntity
 import ru.fogmap.data.db.VisitedCell
 import ru.fogmap.fog.FogGrid
 import ru.fogmap.tracking.LocationFilter
-import ru.fogmap.tracking.PendingGate
 import ru.fogmap.tracking.TrustEngine
 import java.io.ByteArrayOutputStream
 import java.time.LocalDate
@@ -96,14 +95,11 @@ object TrackDebugExport {
         sb.append("\"teleportM\":").append(TrustEngine.TELEPORT_M).append(',')
         sb.append("\"silenceResetS\":").append(TrustEngine.SILENCE_RESET_S).append(',')
         sb.append("\"standCap\":").append(TrustEngine.STAND_CAP_MS).append(',')
-        sb.append("\"pendingLag\":").append(PendingGate.LAG).append(',')
-        sb.append("\"vetoMinDistM\":").append(PendingGate.VETO_MIN_DIST_M).append(',')
         sb.append("\"trustOpen\":").append(FogGrid.TRUST_OPEN).append(',')
         sb.append("\"trustHigh\":").append(FogGrid.TRUST_HIGH).append(',')
         sb.append("\"speedMin\":").append(TrustEngine.SPEED_MIN_MPS).append(',')
         sb.append("\"bikeAcc\":").append(LocationFilter.BIKE_ACCURACY_M).append(',')
-        sb.append("\"vehicleAcc\":").append(LocationFilter.VEHICLE_ACCURACY_M).append(',')
-        sb.append("\"burstWindowMs\":").append(ru.fogmap.tracking.EcoGovernor.BURST_WINDOW_MS)
+        sb.append("\"vehicleAcc\":").append(LocationFilter.VEHICLE_ACCURACY_M)
         sb.append("}}")
         return sb.toString()
     }

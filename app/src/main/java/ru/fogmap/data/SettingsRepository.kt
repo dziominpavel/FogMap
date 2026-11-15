@@ -13,23 +13,18 @@ import kotlinx.coroutines.flow.transform
 import ru.fogmap.data.db.AppDatabase
 
 object PrefsKeys {
-    val PAUSED = booleanPreferencesKey("paused")
+    /**
+     * Тумблер «Запись» (change recording-mode): true — пишем трек и туман.
+     * Заменяет инвертированный `paused`; старый ключ читается только миграцией.
+     */
+    val RECORDING_ENABLED = booleanPreferencesKey("recording_enabled")
+    /** Только для миграции (RecordingMigration). Новый код его не пишет и не читает. */
+    val LEGACY_PAUSED = booleanPreferencesKey("paused")
     val ONBOARDING_DONE = booleanPreferencesKey("onboarding_done")
     /** Тема оболочки: dark|light, default dark (remove-system-theme; system удалён). */
     val THEME_MODE = stringPreferencesKey("theme_mode")
     /** ВРЕМЕННОЕ (dev-logging): вкл/выкл диагностики, default true до стабилизации. */
     val DIAG_ENABLED = booleanPreferencesKey("diag_enabled")
-    /** Эко-режим трекинга (battery-eco 1.1): дев-переключалка base/eco, default base. */
-    val ECO_MODE = booleanPreferencesKey("eco_mode")
-    /** Последний эко-профиль (battery-eco 2.4): ACTIVE/STANDBY/BURST для рестарта. */
-    val ECO_PROFILE = stringPreferencesKey("eco_profile")
-    /**
-     * Якорь STANDBY (wake-balance-parking 2.1): переживает убийство/ребут,
-     * первое смещение после рестарта считается от него.
-     */
-    val ANCHOR_LAT = doublePreferencesKey("standby_anchor_lat")
-    val ANCHOR_LON = doublePreferencesKey("standby_anchor_lon")
-    val ANCHOR_TIME = longPreferencesKey("standby_anchor_time")
     /** Границы регионов на карте (add-region-borders): default false. */
     val REGION_BORDERS = booleanPreferencesKey("region_borders")
     /** POST_NOTIFICATIONS уже спрашивали (fix-track-gap-visibility 5.5): не повторяем. */
@@ -49,18 +44,23 @@ object ThemeModes {
         if (value == LIGHT) LIGHT else DARK
 }
 
-/** Эко-профили опроса (battery-eco 2.1): имена для DataStore и логов. */
-object EcoProfiles {
-    const val ACTIVE = "ACTIVE"
-    const val STANDBY = "STANDBY"
-    const val BURST = "BURST"
-}
-
 class SettingsRepository(
     private val store: DataStore<Preferences>,
     private val db: AppDatabase
 ) {
-    val paused: Flow<Boolean> = store.data.map { it[PrefsKeys.PAUSED] ?: false }
+    /**
+     * Тумблер записи (change recording-mode, D2). Значение при чтении
+     * нормализуется через [RecordingMigration] и один раз записывается:
+     * старая установка получает `!paused`, чистая — `true`.
+     */
+    val recordingEnabled: Flow<Boolean> = store.data.transform { prefs ->
+        val raw = prefs[PrefsKeys.RECORDING_ENABLED]
+        val resolved = RecordingMigration.resolve(raw, prefs[PrefsKeys.LEGACY_PAUSED])
+        emit(resolved)
+        if (raw != resolved) {
+            store.edit { it[PrefsKeys.RECORDING_ENABLED] = resolved }
+        }
+    }
     val onboardingDone: Flow<Boolean> = store.data.map { it[PrefsKeys.ONBOARDING_DONE] ?: false }
     /**
      * Тема только `dark`/`light` (remove-system-theme, design D1): недопустимое
@@ -77,16 +77,14 @@ class SettingsRepository(
     }
     /** ВРЕМЕННОЕ (dev-logging). */
     val diagEnabled: Flow<Boolean> = store.data.map { it[PrefsKeys.DIAG_ENABLED] ?: true }
-    /** Эко-режим (battery-eco 1.1): false = base, true = eco. */
-    val ecoMode: Flow<Boolean> = store.data.map { it[PrefsKeys.ECO_MODE] ?: false }
-    /** Последний эко-профиль (battery-eco 2.4). */
-    val ecoProfile: Flow<String> =
-        store.data.map { it[PrefsKeys.ECO_PROFILE] ?: EcoProfiles.ACTIVE }
     /** Границы регионов на карте (add-region-borders), default false. */
     val regionBorders: Flow<Boolean> =
         store.data.map { it[PrefsKeys.REGION_BORDERS] ?: false }
 
-    suspend fun setPaused(v: Boolean) { store.edit { it[PrefsKeys.PAUSED] = v } }
+    /** Тумблер записи (change recording-mode): единственное место переключения. */
+    suspend fun setRecordingEnabled(v: Boolean) {
+        store.edit { it[PrefsKeys.RECORDING_ENABLED] = v }
+    }
     suspend fun setOnboardingDone() { store.edit { it[PrefsKeys.ONBOARDING_DONE] = true } }
     suspend fun setThemeMode(v: String) {
         require(v in setOf(ThemeModes.DARK, ThemeModes.LIGHT))
@@ -96,26 +94,18 @@ class SettingsRepository(
     /** ВРЕМЕННОЕ (dev-logging). */
     suspend fun setDiagEnabled(v: Boolean) { store.edit { it[PrefsKeys.DIAG_ENABLED] = v } }
 
-    /** Эко-режим (battery-eco 1.1): дев-переключалка, трек не сбрасывает. */
-    suspend fun setEcoMode(v: Boolean) { store.edit { it[PrefsKeys.ECO_MODE] = v } }
-
-    /** Последний эко-профиль (battery-eco 2.4). */
-    suspend fun setEcoProfile(v: String) {
-        require(v in setOf(EcoProfiles.ACTIVE, EcoProfiles.STANDBY, EcoProfiles.BURST))
-        store.edit { it[PrefsKeys.ECO_PROFILE] = v }
-    }
-
-    /** Якорь STANDBY (wake-balance-parking 2.1): persist + восстановление. */
-    suspend fun setStandbyAnchor(lat: Double, lon: Double, timeMs: Long) {
-        store.edit {
-            it[PrefsKeys.ANCHOR_LAT] = lat
-            it[PrefsKeys.ANCHOR_LON] = lon
-            it[PrefsKeys.ANCHOR_TIME] = timeMs
-        }
-    }
-
     /** Границы регионов на карте (add-region-borders): слой отрисовки вкл/выкл. */
     suspend fun setRegionBorders(v: Boolean) { store.edit { it[PrefsKeys.REGION_BORDERS] = v } }
+
+    /**
+     * Удаляет ключи снятого эко-режима (change recording-mode, 8.3).
+     * @return сколько ключей удалено (0 — уже чисто).
+     */
+    suspend fun cleanLegacyEcoKeys(): Int {
+        var removed = 0
+        store.edit { prefs -> removed = LegacyPrefsCleanup.clean(prefs) }
+        return removed
+    }
 
     /** Разрешение на уведомления уже спрашивали (5.5): повторно не спрашиваем. */
     suspend fun setNotifAsked() { store.edit { it[PrefsKeys.NOTIF_ASKED] = true } }

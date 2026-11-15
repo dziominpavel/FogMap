@@ -146,7 +146,10 @@ class TrackDebugExportTest {
         assertTrue(meta.contains("\"speedMin\":1.0"))
         assertTrue(meta.contains("\"bikeAcc\":40.0"))
         assertTrue(meta.contains("\"vehicleAcc\":100.0"))
-        assertTrue(meta.contains("\"burstWindowMs\":180000"))
+        // change recording-mode: ворот C и эко-окна в выгрузке больше нет.
+        assertTrue(!meta.contains("pendingLag"))
+        assertTrue(!meta.contains("vetoMinDistM"))
+        assertTrue(!meta.contains("burstWindowMs"))
     }
 
     @Test

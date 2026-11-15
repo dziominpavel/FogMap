@@ -7,7 +7,9 @@ import android.location.Location
 import android.location.LocationManager
 import android.os.Looper
 import android.os.SystemClock
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,6 +36,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -50,6 +53,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.navigation.NavController
 import com.yandex.mapkit.Animation
 import com.yandex.mapkit.MapKitFactory
@@ -90,6 +94,9 @@ import ru.fogmap.map.RegionBordersLayer
 import ru.fogmap.tracking.TrackingPreconditions
 import ru.fogmap.tracking.TrackingService
 import ru.fogmap.tracking.TrustEngine
+import ru.fogmap.tracking.RecordingStatus
+import ru.fogmap.tracking.TrackingHealth
+import ru.fogmap.ui.RecordingControls
 import ru.fogmap.ui.BottomBar
 import ru.fogmap.ui.theme.isDarkTheme
 
@@ -105,18 +112,34 @@ import ru.fogmap.ui.theme.isDarkTheme
  * Tilt зафиксирован в 0, rotate запрещен, север всегда сверху;
  * справа чип зума и FAB «Где я».
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MapScreen(nav: NavController) {
     val context = LocalContext.current
     val app = context.applicationContext as FogMapApp
     val scope = rememberCoroutineScope()
-    val paused by app.container.dataStore.data
+    val prefs by app.container.dataStore.data
         .collectAsState(initial = androidx.datastore.preferences.core.preferencesOf())
-    val isPaused = paused[PrefsKeys.PAUSED] ?: false
+    val recording by app.container.settingsRepository.recordingEnabled
+        .collectAsState(initial = true)
+    // Возраст последнего фикса тикает раз в секунду: плашка обязана показать
+    // «нет фиксов N мин» сама, без открытия настроек (change recording-mode, 7.3).
+    var nowWallMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    val tickerLifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(tickerLifecycle) {
+        // Тик только пока экран на виду: иначе свёрнутая карта будила бы поток
+        // раз в секунду всё время жизни процесса (ревью эффективности).
+        tickerLifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                nowWallMs = System.currentTimeMillis()
+                kotlinx.coroutines.delay(1_000L)
+            }
+        }
+    }
     val hasPlay = remember { TrackingPreconditions.playServicesAvailable(context) }
     // Ночная карта синхронно с темой оболочки: тёмная → night, светлая → day
     // (remove-system-theme: системного режима нет). Fallback — FogMask.FORCE_DAY_MAP.
-    val darkTheme = isDarkTheme(paused[PrefsKeys.THEME_MODE] ?: ThemeModes.DEFAULT)
+    val darkTheme = isDarkTheme(prefs[PrefsKeys.THEME_MODE] ?: ThemeModes.DEFAULT)
     val useNightMap = darkTheme && !FogMask.FORCE_DAY_MAP
     val veilColor = Color(if (darkTheme) FogMask.VEIL_DARK else FogMask.VEIL_LIGHT)
 
@@ -148,11 +171,10 @@ fun MapScreen(nav: NavController) {
         }
         // Авто-старт трекинга — НЕ зависит от карты: трекинг локален и обязан
         // работать без API-ключа (иначе без ключа не пишется ничего).
-        DisposableEffect(isPaused) {
+        DisposableEffect(recording) {
             val job = scope.launch {
-                if (!isPaused && hasPlay && TrackingService.canTrack(context)) {
-                    runCatching { TrackingService.start(context, via = "map") }
-                }
+                // Один гейт на все точки старта (change recording-mode, D9).
+                runCatching { RecordingControls.ensureStarted(context, recording, "map") }
             }
             onDispose { job.cancel() }
         }
@@ -518,7 +540,7 @@ fun MapScreen(nav: NavController) {
         // создаёт объекты, дальше — только isVisible; городские контуры ниже
         // z10 прячутся (зум-гейт из слушателя камеры).
         val bordersLayer = remember(mapView) { RegionBordersLayer(mapView.mapWindow.map) }
-        val regionBordersOn = paused[PrefsKeys.REGION_BORDERS] ?: false
+        val regionBordersOn = prefs[PrefsKeys.REGION_BORDERS] ?: false
         val showBorderCities = regionBordersOn && camZoom >= RegionBordersLayer.CITY_MIN_ZOOM
         LaunchedEffect(regionBordersOn, showBorderCities) {
             bordersLayer.show(regionBordersOn, showBorderCities)
@@ -859,19 +881,47 @@ fun MapScreen(nav: NavController) {
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
                     )
                 }
+                val status = RecordingStatus.of(
+                    recording = recording,
+                    sinceMs = TrackingHealth.sinceMs(),
+                    nowMs = nowWallMs
+                )
                 Surface(
                     shape = MaterialTheme.shapes.small,
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                    modifier = Modifier.combinedClickable(
+                        onClick = {
+                            scope.launch {
+                                // Включение проходит те же ворота, что и тумблер
+                                // в Настройках: без точной и фоновой геолокации
+                                // запись не включается (change recording-mode, D9).
+                                val want = !recording
+                                if (!want || RecordingControls.canEnable(context)) {
+                                    app.container.settingsRepository.setRecordingEnabled(want)
+                                } else {
+                                    nav.navigate("settings")
+                                }
+                            }
+                        },
+                        onLongClick = { nav.navigate("settings") }
+                    )
                 ) {
                     Row(
                         Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            if (isPaused) "⏸ Пауза" else "● Запись идёт",
+                            when (status.state) {
+                                RecordingStatus.State.OFF -> "⏸ " + RecordingStatus.label(status)
+                                RecordingStatus.State.LIVE -> "● " + RecordingStatus.label(status)
+                                RecordingStatus.State.STALE -> "⚠ " + RecordingStatus.label(status)
+                            },
                             style = MaterialTheme.typography.labelLarge,
-                            color = if (isPaused) MaterialTheme.colorScheme.onSurface
-                            else MaterialTheme.colorScheme.primary
+                            color = when (status.state) {
+                                RecordingStatus.State.OFF -> MaterialTheme.colorScheme.onSurface
+                                RecordingStatus.State.LIVE -> MaterialTheme.colorScheme.primary
+                                RecordingStatus.State.STALE -> MaterialTheme.colorScheme.error
+                            }
                         )
                     }
                 }

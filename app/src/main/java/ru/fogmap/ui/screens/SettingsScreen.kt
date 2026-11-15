@@ -55,7 +55,9 @@ fun SettingsScreen(nav: NavController) {
     var done by remember { mutableStateOf(false) }
     val prefs by app.container.dataStore.data.collectAsState(initial = preferencesOf())
     val themeMode = prefs[ru.fogmap.data.PrefsKeys.THEME_MODE] ?: ThemeModes.DEFAULT
-    val paused = prefs[ru.fogmap.data.PrefsKeys.PAUSED] ?: false
+    // Тумблер записи (change recording-mode): единственное место переключения.
+    val recording by app.container.settingsRepository.recordingEnabled
+        .collectAsState(initial = true)
     // Границы регионов на карте (add-region-borders), default false.
     val regionBorders = prefs[ru.fogmap.data.PrefsKeys.REGION_BORDERS] ?: false
     // ВРЕМЕННОЕ (dev-logging): тумблер диагностики.
@@ -99,31 +101,9 @@ fun SettingsScreen(nav: NavController) {
                     }
                 }
             }
-            // --- Запись (trust-v2 4.1: единственное место паузы) ---
-            // Эко всегда включен (eco-always-on): тумблера нет.
+            // --- Запись (change recording-mode): единственное место тумблера ---
             Text("Запись", style = MaterialTheme.typography.titleMedium)
-            Card(Modifier.fillMaxWidth()) {
-                androidx.compose.foundation.layout.Row(
-                    Modifier.fillMaxWidth().padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Пауза «не писать»", style = MaterialTheme.typography.bodyLarge)
-                        Text(
-                            if (paused) "Запись остановлена"
-                            else "Трекинг идет всегда, когда разрешен",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    }
-                    Switch(
-                        checked = paused,
-                        onCheckedChange = { v ->
-                            scope.launch { app.container.settingsRepository.setPaused(v) }
-                        }
-                    )
-                }
-            }
+            RecordingSection(app, onDetails = { nav.navigate("bg-health") })
             // --- Карта (add-region-borders) ---
             Text("Карта", style = MaterialTheme.typography.titleMedium)
             Card(Modifier.fillMaxWidth()) {

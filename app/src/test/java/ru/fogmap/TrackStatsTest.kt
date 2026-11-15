@@ -1,6 +1,8 @@
 package ru.fogmap
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import ru.fogmap.data.FogRepository
@@ -31,20 +33,21 @@ class TrackStatsTest {
     }
 
     @Test
-    fun `отрезки с недоверенными концами не раздувают дистанцию`() {
-        val jump = pt(55.00225, time = 8000).copy(trust = 10) // выброс 250м
+    fun `подозрительная точка тоже даёт дистанцию`() {
+        // change recording-mode, D6: доверие — диагностика, а не фильтр
+        // километража; раньше подозрительный фикс рвал дистанцию дня.
+        val jump = pt(55.00225, time = 8000).copy(trust = 10)
         val back = pt(55.0, time = 16000)
         val points = listOf(pt(55.0, time = 0), jump, back)
         val d = FogRepository.batchDistance(points)
-        // Отрезки туда (250м) и обратно (250м) пропущены — честный ноль.
-        assertEquals(0.0, d, 1e-9)
+        assertTrue("ожидалось ~500 м, получено $d", d > 480 && d < 520)
     }
 
     @Test
-    fun `недоверенный хвост не линкуется`() {
+    fun `хвост с низким доверием входит в дистанцию`() {
         val prev = pt(55.0).copy(trust = 10)
         val d = FogRepository.batchDistance(listOf(pt(55.001, time = 8000)), prev)
-        assertEquals(0.0, d, 1e-9)
+        assertTrue("ожидалось ~111 м, получено $d", d > 110 && d < 113)
     }
 
     @Test
@@ -58,17 +61,15 @@ class TrackStatsTest {
     }
 
     @Test
-    fun `дистанция берет хвост дня, а якорь уходит в коридор`() {
-        // fix-import-metrics 1.3: хорда wake-якоря не попадает в дистанцию.
+    fun `дистанция берет хвост дня, а коридор — только при порядке времени`() {
         val dayTail = pt(55.0, time = 0)
-        val anchor = pt(54.9, time = 0) // «сон» в 11 км от хвоста дня
-        val plan = FogRepository.planBatch(dayTail = dayTail, wakeAnchor = anchor)
-        assertTrue(plan.distanceTail === dayTail)
-        assertTrue(plan.corridorAnchor === anchor)
-        // Дистанция от хвоста дня (~111 м), а не от якоря (~11 км).
         val points = listOf(pt(55.001, time = 8000))
-        val d = FogRepository.batchDistance(points, plan.distanceTail)
+        // Дистанция от хвоста дня (~111 м), а не от гипотетического «якоря сна».
+        val d = FogRepository.batchDistance(points, dayTail)
         assertTrue("ожидалось ~111 м, получено $d", d > 110 && d < 113)
+        // Отложенная пачка (точка старше хвоста) линка не получает.
+        assertNotNull(FogRepository.linkAnchorFor(dayTail, points))
+        assertNull(FogRepository.linkAnchorFor(pt(55.0, time = 10_000), points))
     }
 
     @Test

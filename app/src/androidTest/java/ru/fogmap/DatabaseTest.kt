@@ -19,7 +19,6 @@ import ru.fogmap.data.TrackDebugImport
 import ru.fogmap.data.TrackRepository
 import ru.fogmap.data.db.AppDatabase
 import ru.fogmap.data.db.RawFixEntity
-import ru.fogmap.tracking.PendingGate
 
 /**
  * Инструментальный тест БД (задача 2.2/2.3):
@@ -65,9 +64,8 @@ class DatabaseTest {
                 startedAt = 1, finishedAt = 2, distanceM = 0.0, pointsCount = 0, name = "t"
             )
         )
-        // Ворота C (PendingGate.LAG=2): первая точка открывается только после
-        // подтверждения successors — одиночка никогда не откроет ничего,
-        // поэтому батч из трех идущих точек (шаг ~111 м на север).
+        // change recording-mode: ворот C больше нет — батч открывает туман сразу.
+        // Три идущих точки (шаг ~111 м на север) дают кисти и коридор.
         val res = fog.appendPoints(
             trackId,
             listOf(
@@ -77,8 +75,9 @@ class DatabaseTest {
             )
         )
         assertTrue(res.newCells > 0)
-        assertEquals(res.newCells.toLong(), db.fogDao().cellCount())
-        // Формула площади: ячейки × 0,01 км² — проверяем через счетчик.
+        // Строк в пирамиде меньше, чем базовых клеток: компакшн заменяет
+        // четвёрки детей родителем. Площадь считается в базовых эквивалентах.
+        assertTrue("строк " + db.fogDao().cellCount(), db.fogDao().cellCount() > 0)
         val cells = db.counterDao().get("area_cells_all") ?: 0
         assertEquals(res.newCells.toLong(), cells)
     }
@@ -204,9 +203,6 @@ class DatabaseTest {
         // Первая точка — STAND холодного старта, остальные приняты.
         assertEquals(pts.size, t.pointsCount)
         assertTrue("точек ${pts.size}", pts.size >= 38)
-        // Хвост ожидания — не больше лага ворот, остальное подтверждено.
-        val tail = db.trackDao().unopenedTail(t.id)
-        assertTrue("хвост ${tail.size}", tail.size <= PendingGate.LAG)
         // Туман вдоль всей линии (~4.3 км), а не у последних 16 точек.
         assertTrue(db.fogDao().cellCount() > 500)
         // Границы дня из данных.

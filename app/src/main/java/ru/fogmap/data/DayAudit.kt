@@ -49,17 +49,10 @@ object DayAudit {
         val asc = points.sortedWith(compareBy({ it.time }, { it.id }))
         val moving = asc.filter { it.state == "MOVING" }
         val timeS = TrackChunking.totalSpanMs(moving.map { it.time }) / 1000
-        var dist = 0.0
-        var prev: TrackPointEntity? = null
-        for (p in moving) {
-            val a = prev
-            if (a != null && a.trust >= ru.fogmap.fog.FogGrid.TRUST_OPEN &&
-                p.trust >= ru.fogmap.fog.FogGrid.TRUST_OPEN
-            ) {
-                dist += FogRepository.haversineM(a.lat, a.lon, p.lat, p.lon)
-            }
-            prev = p
-        }
+        // Дистанция — тем же кодом, что живая запись (change recording-mode,
+        // D6): аудит не должен считать по своим правилам, иначе значения
+        // расходятся, и расхождение всплывает только ночью.
+        val dist = FogRepository.batchDistance(moving.map { it.toRaw() })
         val foreign = asc.filter {
             Instant.ofEpochMilli(it.time).atZone(zone).toLocalDate() != day
         }

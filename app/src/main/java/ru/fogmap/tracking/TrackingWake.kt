@@ -12,17 +12,19 @@ import android.os.PowerManager
  * wake-lock на Huawei не держит CPU: таймеры `delay()` считают uptime,
  * который не идёт во сне.
  *
- * Держим CPU ТОЛЬКО в профилях движения (ACTIVE/BURST): стоянка остаётся
- * экономной, сон устройства не ломается. Пауза снимает lock.
+ * Держим CPU всё время записи (change recording-mode): выключение тумблера
+ * снимает lock, иных условий нет — «экономный сон стоянки» отменён.
  */
 object TrackingWake {
 
     /** Имя в `dumpsys power` — по нему lock ищется в поле. */
     const val TAG = "FogMap:tracking"
 
-    /** Нужен ли wake-lock: только пока пишется движение и нет паузы. */
-    fun neededFor(profile: EcoGovernor.Profile, paused: Boolean): Boolean =
-        !paused && (profile == EcoGovernor.Profile.ACTIVE || profile == EcoGovernor.Profile.BURST)
+    /**
+     * Нужен ли wake-lock (change recording-mode, D8): да, пока идёт запись и
+     * жив сервис. Стоянка не исключение — остановка CPU теряет фиксы молча.
+     */
+    fun neededFor(recording: Boolean): Boolean = recording
 
     /**
      * Держатель на один сервис. Идемпотентен: повторное включение не плодит

@@ -15,10 +15,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.LocalContext
-import androidx.datastore.preferences.core.preferencesOf
 import androidx.navigation.NavController
 import ru.fogmap.FogMapApp
-import ru.fogmap.data.PrefsKeys
 import ru.fogmap.diag.DevLog
 import ru.fogmap.tracking.TrackingService
 
@@ -30,11 +28,10 @@ import ru.fogmap.tracking.TrackingService
 fun BottomBar(nav: NavController, current: String) {
     val context = LocalContext.current
     val app = context.applicationContext as FogMapApp
-    val prefs by app.container.dataStore.data.collectAsState(initial = preferencesOf())
-    val paused = prefs[PrefsKeys.PAUSED] ?: false
-    // Запись активна: гео разрешено и пауза выключена (MapScreen в этом
+    val enabled by app.container.settingsRepository.recordingEnabled.collectAsState(initial = true)
+    // Запись активна: тумблер включён и гео разрешено (MapScreen в этом
     // состоянии автостартует TrackingService).
-    val recording = !paused && TrackingService.canTrack(context)
+    val recording = enabled && TrackingService.canTrack(context)
 
     val entries = listOf(
         Triple("map", "Карта", Icons.Filled.Map),

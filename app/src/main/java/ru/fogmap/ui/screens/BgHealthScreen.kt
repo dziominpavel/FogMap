@@ -33,7 +33,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.datastore.preferences.core.preferencesOf
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -45,7 +44,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import ru.fogmap.FogMapApp
-import ru.fogmap.data.PrefsKeys
 import ru.fogmap.tracking.BgHealth
 import ru.fogmap.tracking.TrackingLife
 import ru.fogmap.ui.BgHealthIntents
@@ -65,8 +63,10 @@ fun BgHealthScreen(nav: NavController) {
     val context = LocalContext.current
     val app = context.applicationContext as FogMapApp
     val scope = rememberCoroutineScope()
-    val prefs by app.container.dataStore.data.collectAsState(initial = preferencesOf())
-    val paused = prefs[PrefsKeys.PAUSED] ?: false
+    val recording by app.container.settingsRepository.recordingEnabled
+        .collectAsState(initial = true)
+    // BgHealth говорит о «паузе» историческим языком; смысл тот же — запись выключена.
+    val paused = !recording
     var snapshot by remember { mutableStateOf<BgHealth.Snapshot?>(null) }
     var checkedAt by remember { mutableLongStateOf(0L) }
 

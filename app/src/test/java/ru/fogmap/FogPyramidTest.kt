@@ -141,10 +141,11 @@ class FogPyramidTest {
     }
 
     @Test
-    fun `недоверенные точки ничего не открывают`() {
+    fun `недоверенная точка всё равно открывает кисть`() {
+        // change recording-mode, D5: доверие — диагностика, а не ворота тумана.
         val a = RawPoint(time = 0, lat = 53.9, lon = 27.56, acc = 8f, speed = 14f,
-            trust = 10, openFog = false)
-        assertTrue(FogRepository.openBaseCells(listOf(a), null).isEmpty())
+            trust = 10)
+        assertTrue(FogRepository.openBaseCells(listOf(a), null).isNotEmpty())
     }
 
     @Test

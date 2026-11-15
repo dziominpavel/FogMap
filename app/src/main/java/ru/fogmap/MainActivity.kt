@@ -6,10 +6,13 @@ import androidx.activity.compose.setContent
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.yandex.mapkit.MapKitFactory
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import ru.fogmap.data.ThemeModes
 import ru.fogmap.ui.screens.AchievementsScreen
 import ru.fogmap.ui.screens.BgHealthScreen
@@ -26,10 +29,14 @@ import ru.fogmap.ui.theme.FogMapTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Открытие приложения возвращает запись (поле 09–12.11): система
-        // останавливала трекинг и сама его больше не поднимала; заход в
-        // приложение — самый очевидный для владельца способ это починить.
-        runCatching { ru.fogmap.tracking.TrackingService.start(this, via = "ui") }
+        // Открытие приложения возвращает запись, если она включена тумблером
+        // (change recording-mode): выключенная запись не поднимает службу.
+        lifecycleScope.launch {
+            val recording = runCatching {
+                (application as FogMapApp).container.settingsRepository.recordingEnabled.first()
+            }.getOrDefault(true)
+            runCatching { ru.fogmap.ui.RecordingControls.ensureStarted(this@MainActivity, recording, "ui") }
+        }
         setContent {
             // Тема из DataStore: смена применяется рекомпозицией, без перезапуска.
             val app = application as FogMapApp

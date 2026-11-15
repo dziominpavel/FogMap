@@ -10,6 +10,28 @@
   (1.1.0, только доки/тесты/WIP)`.
 - Открытые вопросы на следующую сессию.
 
+## 2026-11-15 (вечер) — change `recording-mode`: режим записи по тумблеру
+
+Что сделали:
+- Разобрали выгрузку выходных: за двое суток 271 и 20 точек, `eco_fix` за день 20, watchdog 97 раз «started» при мёртвой доставке; 186 из 271 точек легли в трек без тумана. Причина — слои оптимизаций, у каждого свой способ тихо не сработать.
+- Заархивировали `durable-tracking-pipeline` и `adaptive-motion-state` с синком спеков (day-ledger, fix-journal, motion-state, tracking, battery-eco) — их эко- и гейтовые части отменяются новым change.
+- Создали change `recording-mode`: 8 дельта-спеков, 34 задачи, 30 дельта-операций (11 ADDED, 5 MODIFIED, 14 REMOVED).
+- Реализовали: один тумблер «Запись» (Настройки + плашка на карте), миграция `paused` → `recording_enabled`, единый профиль 5 с, wake-lock на всю запись, два пути приёма фиксов в один журнал, удаление ворот C и trust-вето для тумана, кисть и дистанция без доверия, самовосстановление подписки по возрасту фикса, `no_fix` по фиксу, watchdog с исходом `fix_stale`, секция «Запись» с чек-листом, чистка снятых ключей эко.
+- Удалены файлы: `EcoGovernor`, `MotionState`, `ActivityTransitions`, `ActivityTransitionReceiver`, `ActivitySignal`, `PendingGate`, их тесты; из манифеста — переходы активности.
+- Проверка: `:app:testDebugUnitTest` — 296+ тестов зелёные (новые: `RecordingMigrationTest`, `RecordingGateTest`, `RecordingParamsTest`, `FixSilenceTest`, `RecordingStatusTest`, `RecordingReadinessTest`, `LegacyPrefsCleanupTest`, `FogCorridorTest`); `:app:compileDebugKotlin` и `:app:compileDebugAndroidTestKotlin` зелёные; собран `dist/FogMap-debug-latest.apk` (1.9.1.92, dirty).
+
+Что решили:
+- См. `docs/decisions.md` от 15.11: тумблер вместо паузы, один профиль опроса, два пути приёма, удаление ворот C, доверие — только диагностика, самовосстановление по возрасту фикса.
+
+Открытые вопросы:
+- Полевой прогон в поездке (задачи 9.2–9.3): дыры ≤ 2 мин, `eco_fix` ≈ длительность/5 с, число точек равно числу открытых.
+- Instrumented-проверки задач 3.2, 3.3, 4.2 (дубль фикса одной точкой, мгновенный flush, переподписка с перезапуском) — на эмуляторе.
+- `BgHealthScreen` остаётся отдельным экраном деталей; кандидат на слияние с секцией «Запись» в следующем change.
+
+Версия: без бампа (в Unreleased; бамп на релизе).
+
+---
+
 ## 2026-11-12 (вечер) — релиз 1.9.1 (PATCH): надёжность записи и тихое уведомление
 
 Что сделали:

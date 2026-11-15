@@ -43,34 +43,49 @@ object TrackingWatchdog {
      */
     fun checkAndStart(context: Context, source: String): String {
         val app = context.applicationContext as? FogMapApp
-        val paused = if (app == null) {
-            false
+        val recording = if (app == null) {
+            true
         } else {
             runCatching {
-                runBlocking { app.container.dataStore.data.first()[PrefsKeys.PAUSED] ?: false }
-            }.getOrDefault(false)
+                runBlocking { app.container.settingsRepository.recordingEnabled.first() }
+            }.getOrDefault(true)
         }
-        val outcome = when {
-            paused -> "skip_paused"
-            !TrackingPreconditions.playServicesAvailable(context) -> "skip_play_services"
-            !TrackingService.canTrack(context) -> "skip_no_permission"
-            TrackingService.start(context, via = "watchdog") -> "started"
-            // Отказ `start()` уже записан в `start_attempt` с классом/текстом
-            // ошибки — здесь только исход цикла, чтобы событие было одно.
-            else -> "start_failed"
+        val decision = RecordingGate.decide(
+            recording = recording,
+            playServices = TrackingPreconditions.playServicesAvailable(context),
+            canTrack = TrackingService.canTrack(context)
+        )
+        val ageMs = TrackingHealth.ageMs()
+        val outcome = if (decision == RecordingGate.Decision.START) {
+            val started = TrackingService.start(context, via = "watchdog")
+            when {
+                // Отказ `start()` уже записан в `start_attempt` с классом/текстом
+                // ошибки — здесь только исход цикла, чтобы событие было одно.
+                !started -> "start_failed"
+                // Служба жива, а фиксы не идут: «started» здесь было бы ложью —
+                // ровно та маскировка, из-за которой суточная дыра не находилась.
+                TrackingHealth.serviceAlive && ageMs >= FixSilence.THRESHOLD_MS -> "fix_stale"
+                else -> "started"
+            }
+        } else {
+            RecordingGate.outcomeName(decision)
         }
-        report(source, outcome)
+        report(source, outcome, ageMs)
         return outcome
     }
 
-    private fun report(source: String, outcome: String) {
-        val payload = mapOf(
-            "outcome" to outcome,
-            "period_m" to PERIOD_MIN,
-            "source" to source
-        )
-        if (outcome == "start_failed") DevLog.w("TRACK", "watchdog", payload)
-        else DevLog.i("TRACK", "watchdog", payload)
+    private fun report(source: String, outcome: String, ageMs: Long) {
+        val payload = buildMap {
+            put("outcome", outcome)
+            put("period_m", PERIOD_MIN)
+            put("source", source)
+            if (outcome == "fix_stale") put("age_ms", ageMs)
+        }
+        if (outcome == "start_failed" || outcome == "fix_stale") {
+            DevLog.w("TRACK", "watchdog", payload)
+        } else {
+            DevLog.i("TRACK", "watchdog", payload)
+        }
     }
 
     /** Единая точка планирования: WorkManager + будильник, идемпотентно. */
