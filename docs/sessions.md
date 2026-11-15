@@ -18,7 +18,10 @@
 - Создали change `recording-mode`: 8 дельта-спеков, 34 задачи, 30 дельта-операций (11 ADDED, 5 MODIFIED, 14 REMOVED).
 - Реализовали: один тумблер «Запись» (Настройки + плашка на карте), миграция `paused` → `recording_enabled`, единый профиль 5 с, wake-lock на всю запись, два пути приёма фиксов в один журнал, удаление ворот C и trust-вето для тумана, кисть и дистанция без доверия, самовосстановление подписки по возрасту фикса, `no_fix` по фиксу, watchdog с исходом `fix_stale`, секция «Запись» с чек-листом, чистка снятых ключей эко.
 - Удалены файлы: `EcoGovernor`, `MotionState`, `ActivityTransitions`, `ActivityTransitionReceiver`, `ActivitySignal`, `PendingGate`, их тесты; из манифеста — переходы активности.
-- Проверка: `:app:testDebugUnitTest` — 296+ тестов зелёные (новые: `RecordingMigrationTest`, `RecordingGateTest`, `RecordingParamsTest`, `FixSilenceTest`, `RecordingStatusTest`, `RecordingReadinessTest`, `LegacyPrefsCleanupTest`, `FogCorridorTest`); `:app:compileDebugKotlin` и `:app:compileDebugAndroidTestKotlin` зелёные; собран `dist/FogMap-debug-latest.apk` (1.9.1.92, dirty).
+- Проверка: `:app:testDebugUnitTest` — 309 тестов зелёные (новые: `RecordingMigrationTest`, `RecordingGateTest`, `RecordingParamsTest`, `FixSilenceTest`, `RecordingStatusTest`, `RecordingReadinessTest`, `LegacyPrefsCleanupTest`, `FogCorridorTest`); `:app:connectedDebugAndroidTest` — 13/13 на эмуляторе; `:app:compileDebugKotlin` и `:app:compileDebugAndroidTestKotlin` зелёные.
+- Change заархивирован с синком 8 дельта-спеков в основные (11 ADDED, 5 MODIFIED, 14 REMOVED); открытыми оставлены 5 проверочных задач (3.3, 4.2 — instrumented; 9.1–9.3 — установка и полевой прогон).
+- Упрощение свежих правок четырьмя ревьюерами: снятие колбэк-подписки в `onDestroy`, чистка журнала на общем тике, один гейт старта `RecordingControls`, единый расчёт дистанции в аудите, плашка по возрасту от старта отсчёта, кулдаун рестарта вне экземпляра службы.
+- Релиз `1.10.0` (MINOR): `dist/FogMap-release-latest.apk` (1.10.0.94-g210da73, versionCode 94), тег `v1.10.0`, GitHub Release опубликован, витрина оповещена. Попутно найден и исправлен дефект релизного скрипта: `release.ps1` после коммита 89d7f51 остался без BOM, и Windows PowerShell 5.1 читал файл как ANSI — `-Prepare` падал с parse error до любых изменений.
 
 Что решили:
 - См. `docs/decisions.md` от 15.11: тумблер вместо паузы, один профиль опроса, два пути приёма, удаление ворот C, доверие — только диагностика, самовосстановление по возрасту фикса.
@@ -28,7 +31,7 @@
 - Instrumented-проверки задач 3.2, 3.3, 4.2 (дубль фикса одной точкой, мгновенный flush, переподписка с перезапуском) — на эмуляторе.
 - `BgHealthScreen` остаётся отдельным экраном деталей; кандидат на слияние с секцией «Запись» в следующем change.
 
-Версия: без бампа (в Unreleased; бамп на релизе).
+Версия: 1.9.1 → 1.10.0 (MINOR, релиз APK v1.10.0).
 
 ---
 
